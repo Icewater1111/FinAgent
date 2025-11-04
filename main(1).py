@@ -485,8 +485,9 @@ model_split = ChatTongyi(
 )
 history_prompt = ChatPromptTemplate.from_messages([
     ("system",
-     """你是一个金融问题理解助手，需要根据智能体与用户的对话历史以及当前用户的输入准确判断出当前用户的查询需求以及附带的分析需求，并将用户的全部需求组织为一个完整的查询输出。
-     注意只输出你重新组织后的查询（问题），不要输出其余无关内容，更不要对查询进行解答！！！请你牢记这一点！！！"""),
+     """你是一个金融问题理解助手。你的任务是：根据智能体与用户的对话历史以及当前用户的输入，准确判断并整理出用户当前的查询需求及相关分析需求，输出重新组织用户需求后的完整查询内容。
+     注意：禁止对用户的查询或提问进行任何形式的解释、分析、推理或回答。禁止直接回应用户的需求。输出必须是一个问题或查询。
+     输出中不得包含任何额外内容（例如提示语、解释性文字或结论）"""),
     ("placeholder", "{chat_history}"),
     ("human", "{init_query}")
 ])
@@ -665,8 +666,8 @@ while True:
         print("对话结束。")
         break
 
-    #query = history_query_chain.invoke({"init_query": query, "chat_history": memory.buffer})
-    #print(f"结合上下文推理后的查询：{query}")
+    query = history_query_chain.invoke({"init_query": query, "chat_history": memory.buffer})
+    print(f"结合上下文推理后的查询：{query}")
     # RAG 和工具检索部分 (这部分仍然是每次查询都执行，因为工具的选择可能依赖于当前查询)
     begin_time_rag_process = time.time()
     splited_query = rag_llm_chain_split.invoke({"init_query": query})
