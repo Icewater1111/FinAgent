@@ -4106,7 +4106,7 @@ def create_api_documents(api_specs: List[Dict]) -> List[Document]:
                     # 功能描述权重为2，重复2次
                     weighted_description_parts.append((current_text + " ") * 2)
                 elif key == "数据粒度":
-                    # 数据粒度权重为3，重复5次
+                    # 数据粒度权重为5，重复5次
                     weighted_description_parts.append((current_text + " ") * 5)
                 else:
                     # 其他描述字段权重为1
