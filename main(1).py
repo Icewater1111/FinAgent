@@ -15,16 +15,27 @@ from langchain.chat_models import init_chat_model
 # 导入记忆模块
 from langchain.memory import ConversationBufferWindowMemory # 导入滑动窗口记忆
 from langchain_core.messages import HumanMessage, AIMessage # 用于手动构建消息，如果需要的话
-
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 from all_tool import all_tools, load_dict_from_json # 确保这些是正确的导入路径
 print("main.py中datetime是什么类型？", type(datetime), datetime)
 import pandas as pd  # 新增导入 pandas
+<<<<<<< HEAD
 from langchain.tools import tool # 新增导入 Tool
 from langchain.tools import Tool
+=======
+from langchain.tools import Tool # 新增导入 Tool
+>>>>>>> e59963395a20a25dd4df91318f780912039f6508
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 now = datetime.now()
 
+
+print("--- Python 脚本中读取的环境变量 ---")
+print("HTTP_PROXY:", os.getenv('HTTP_PROXY'))
+print("HTTPS_PROXY:", os.getenv('HTTPS_PROXY'))
+print("http_proxy:", os.getenv('http_proxy'))
+print("https_proxy:", os.getenv('https_proxy'))
+print("-----------------------------------")
 # 加载api_tool_dic
 API_TOOL_dic_path = "./api_dic.json"
 API_TOOL_dic = load_dict_from_json(API_TOOL_dic_path)
@@ -142,10 +153,15 @@ cache_search_tool = Tool(
 class DataScratchpad:
     """
     一个具有模糊键名匹配功能的键值存储，用作Agent的短期工作记忆。
+<<<<<<< HEAD
+=======
+    它使用语义搜索来查找最相似的键名，以提高容错性。
+>>>>>>> e59963395a20a25dd4df91318f780912039f6508
     """
     def __init__(self, embeddings_model):
         self.data: Dict[str, Any] = {}
         self.embeddings = embeddings_model
+<<<<<<< HEAD
         self.key_vectorstore: FAISS | None = None
         self.key_similarity_threshold = 0.25
         print("📝 具备模糊匹配功能的数据暂存区 (Scratchpad) 已初始化。")
@@ -174,6 +190,50 @@ class DataScratchpad:
             return retrieved_value
         
         print(f"暂存区模糊检索失败: 传入key='{key}'，未找到相似的已存键名。")
+=======
+        # 为键名创建一个专门的向量索引，初始为空
+        self.key_vectorstore: FAISS | None = None
+        self.key_similarity_threshold = 0.25 # 键名匹配的相似度阈值
+        print("📝 具备模糊匹配功能的数据暂存区 (Scratchpad) 已初始化。")
+
+    def save(self, key: str, value: Any) -> str:
+        """保存一个数据点到暂存区，并为键名建立索引。"""
+        # 1. 存储原始数据
+        self.data[key] = value
+        
+        # 2. 为键名本身创建并更新向量索引
+        new_key_doc = Document(page_content=key)
+        if self.key_vectorstore is None:
+            # 如果是第一次保存，则创建向量库
+            self.key_vectorstore = FAISS.from_documents([new_key_doc], self.embeddings)
+        else:
+            # 否则，将新键名添加到现有向量库
+            self.key_vectorstore.add_documents([new_key_doc])
+            
+        #print(f"暂存区保存: key='{key}', value={value}")
+        return f"数据点 '{key}' 已成功保存到暂存区。"
+
+    def retrieve(self, key: str) -> Any:
+        """通过语义搜索模糊匹配键名，从暂存区检索一个数据点。"""
+        if self.key_vectorstore is None:
+            return "暂存区为空，无法检索。"
+            
+        # 1. 对传入的 key 在已有的键名中进行语义搜索
+        results_with_scores = self.key_vectorstore.similarity_search_with_score(key, k=1)
+        
+        if results_with_scores and results_with_scores[0][1] < self.key_similarity_threshold:
+            # 如果找到了相似度足够高的键名
+            most_similar_key_doc, score = results_with_scores[0]
+            most_similar_key = most_similar_key_doc.page_content
+            
+            retrieved_value = self.data.get(most_similar_key, "内部错误：在字典中找不到已匹配的键。")
+            
+            #print(f"暂存区模糊检索成功: 传入key='{key}', 匹配到最相似key='{most_similar_key}' (得分: {score:.3f})")
+            return retrieved_value
+        
+        # 如果找不到足够相似的键名
+        #print(f"暂存区模糊检索失败: 传入key='{key}'，未找到相似的已存键名。")
+>>>>>>> e59963395a20a25dd4df91318f780912039f6508
         return "未在暂存区中找到与该键名相关的数据。"
 
 # 【修改】实例化暂存区时传入 embeddings
@@ -181,6 +241,7 @@ scratchpad = DataScratchpad(embeddings)
 
 # 【修改】优化工具描述，引导Agent生成规范的键名（仍然是好习惯）
 class SaveArgs(BaseModel):
+<<<<<<< HEAD
     key: str = Field(description="用于存储和检索数据的唯一标识符。强烈建议遵循【实体_属性】的命名规范，例如 '特斯拉_股价'。")
     value: Any = Field(description="要存储的原始数据值，可以是数字、字符串或字典。")
 
@@ -200,6 +261,36 @@ def save_to_scratchpad(key: str, value: Any) -> str:
 def retrieve_from_scratchpad(key: str) -> Any:
     """请你首先调用该工具！在调用外部API获取数据前，必须先用此工具检查工作暂存区中是否已存在所需的数据。这比调用API更快。"""
     return scratchpad._retrieve_data(key)
+=======
+    key: str = Field(
+        description=(
+            "用于存储和检索数据的唯一标识符。强烈建议遵循【实体_属性】的命名规范，例如 '特斯拉_股价', '苹果公司_每股收益'。"
+            "键名应为标准化的、不含口语化词汇的字符串，以提高后续检索的准确性。"
+        )
+    )
+    value: Any = Field(description="要存储的原始数据值，可以是数字、字符串或字典。")
+
+class RetrieveArgs(BaseModel):
+    key: str = Field(
+        description=(
+            "要检索的数据的唯一标识符。即使不完全确定键名，系统也会尝试模糊匹配。但提供一个符合【实体_属性】规范的键名（如'特斯拉_股价'）会得到最准确的结果。"
+        )
+    )
+
+# 创建暂存区工具 (保持不变)
+save_tool = Tool.from_function(
+    func=scratchpad.save,
+    name="SaveToScratchpad",
+    description="当获取到一个重要的、未来可能用于计算的原始数据点（如股价、EPS）时，使用此工具将其保存到工作暂存区。",
+    args_schema=SaveArgs
+)
+retrieve_tool = Tool.from_function(
+    func=scratchpad.retrieve,
+    name="RetrieveFromScratchpad",
+    description="在调用外部API获取数据前，必须先用此工具检查工作暂存区中是否已存在所需的数据。这比调用API更快。",
+    args_schema=RetrieveArgs
+)
+>>>>>>> e59963395a20a25dd4df91318f780912039f6508
 # ==================== 修改结束 ====================
 # 加载***完整数据库***
 index_list = ["AM", "CN", "HK", "OT"]
@@ -473,21 +564,30 @@ rag_prompt = PromptTemplate(
 # model = init_chat_model("deepseek-chat", model_provider="deepseek", seed=2025)
 
 model = FixedChatTongyi(
+<<<<<<< HEAD
     model="qwen-max",  # 或 qwen-max / qwen-turbo 等
+=======
+    model="qwen-turbo",  # 或 qwen-max / qwen-turbo 等
+>>>>>>> e59963395a20a25dd4df91318f780912039f6508
     api_key=os.getenv("DASHSCOPE_API_KEY"),
 )
 
 # 配合语义分割以适应多API问题
-model_split = ChatTongyi(
+model_split = FixedChatTongyi(
     model="qwen-turbo",
     model_kwargs={"seed": 45},
     api_key=os.getenv("DASHSCOPE_API_KEY"),
 )
 history_prompt = ChatPromptTemplate.from_messages([
     ("system",
+<<<<<<< HEAD
      """你是一个金融问题理解助手。你的任务是：根据智能体与用户的对话历史以及当前用户的输入，准确判断并整理出用户当前的查询需求及相关分析需求，输出重新组织用户需求后的完整查询内容。
      注意：禁止对用户的查询或提问进行任何形式的解释、分析、推理或回答。禁止直接回应用户的需求。输出必须是一个问题或查询。
      输出中不得包含任何额外内容（例如提示语、解释性文字或结论）"""),
+=======
+     """你是一个金融问题理解助手，需要根据智能体与用户的对话历史以及当前用户的输入准确判断出当前用户的查询需求以及附带的分析需求，并将用户的全部需求组织为一个完整的查询输出。
+     注意只输出你重新组织后的查询（问题），不要输出其余无关内容，更不要对查询进行解答！！！请你牢记这一点！！！"""),
+>>>>>>> e59963395a20a25dd4df91318f780912039f6508
     ("placeholder", "{chat_history}"),
     ("human", "{init_query}")
 ])
@@ -666,8 +766,13 @@ while True:
         print("对话结束。")
         break
 
+<<<<<<< HEAD
     query = history_query_chain.invoke({"init_query": query, "chat_history": memory.buffer})
     print(f"结合上下文推理后的查询：{query}")
+=======
+    #query = history_query_chain.invoke({"init_query": query, "chat_history": memory.buffer})
+    #print(f"结合上下文推理后的查询：{query}")
+>>>>>>> e59963395a20a25dd4df91318f780912039f6508
     # RAG 和工具检索部分 (这部分仍然是每次查询都执行，因为工具的选择可能依赖于当前查询)
     begin_time_rag_process = time.time()
     splited_query = rag_llm_chain_split.invoke({"init_query": query})
@@ -711,7 +816,11 @@ while True:
     # 筛选出实际检索到的工具实例
     query_tools_instances = [tool for tool in all_tools if tool.name in query_tool_names]
     # 3. 【修改】将RAG检索到的API工具和缓存工具\数据暂存区合并
+<<<<<<< HEAD
     final_tools = [cache_search_tool, save_to_scratchpad, retrieve_from_scratchpad] + query_tools_instances
+=======
+    final_tools = [cache_search_tool, save_tool, retrieve_tool] + query_tools_instances
+>>>>>>> e59963395a20a25dd4df91318f780912039f6508
     print(f"✨ Agent本轮可用总工具: {[t.name for t in final_tools]}")
 
     # 4. 创建并执行 Agent
@@ -727,7 +836,11 @@ while True:
             agent=agent,
             tools=final_tools, # 传入本轮所有可用工具
             verbose=True,
+<<<<<<< HEAD
             #memory=memory # 传入记忆对象
+=======
+            memory=memory # 传入记忆对象
+>>>>>>> e59963395a20a25dd4df91318f780912039f6508
         )
         begin_time_llm_response = time.time()
         response = agent_executor.invoke({"input": query})
