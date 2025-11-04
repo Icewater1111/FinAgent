@@ -3,7 +3,8 @@ import os
 import time
 from datetime import datetime
 from dotenv import load_dotenv
-
+import json
+from typing import Any, Dict
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -14,12 +15,22 @@ from langchain.chat_models import init_chat_model
 # 导入记忆模块
 from langchain.memory import ConversationBufferWindowMemory # 导入滑动窗口记忆
 from langchain_core.messages import HumanMessage, AIMessage # 用于手动构建消息，如果需要的话
-
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 from all_tool import all_tools, load_dict_from_json # 确保这些是正确的导入路径
 print("main.py中datetime是什么类型？", type(datetime), datetime)
-
+import pandas as pd  # 新增导入 pandas
+from langchain.tools import Tool # 新增导入 Tool
+from langchain_core.documents import Document
+from pydantic import BaseModel, Field
 now = datetime.now()
 
+
+print("--- Python 脚本中读取的环境变量 ---")
+print("HTTP_PROXY:", os.getenv('HTTP_PROXY'))
+print("HTTPS_PROXY:", os.getenv('HTTPS_PROXY'))
+print("http_proxy:", os.getenv('http_proxy'))
+print("https_proxy:", os.getenv('https_proxy'))
+print("-----------------------------------")
 # 加载api_tool_dic
 API_TOOL_dic_path = "./api_dic.json"
 API_TOOL_dic = load_dict_from_json(API_TOOL_dic_path)
@@ -38,6 +49,188 @@ except Exception as e:
     print(f"Error initializing DashScopeEmbeddings: {e}")
     exit()
 
+
+class FixedChatTongyi(ChatTongyi):
+    """修复了多 tool_calls 流式响应 bug 的 ChatTongyi"""
+
+    def subtract_client_response(self, resp: Any, prev_resp: Any) -> Any:
+        """Subtract prev response from curr response.
+
+        Useful when streaming without `incremental_output = True`
+        """
+
+        resp_copy = json.loads(json.dumps(resp))
+        choice = resp_copy["output"]["choices"][0]
+        message = choice["message"]
+
+        prev_resp_copy = json.loads(json.dumps(prev_resp))
+        prev_choice = prev_resp_copy["output"]["choices"][0]
+        prev_message = prev_choice["message"]
+
+        message["content"] = message["content"].replace(prev_message["content"], "")
+
+        if message.get("tool_calls"):
+            for index, tool_call in enumerate(message["tool_calls"]):
+                function = tool_call["function"]
+
+                if prev_message.get("tool_calls"):
+                    # print(f"message: {message["tool_calls"]}")
+                    # print(f"prev_function: {prev_message["tool_calls"]}")
+                    if index < len(prev_message["tool_calls"]):
+                        prev_function = prev_message["tool_calls"][index]["function"]
+
+                        if "name" in function:
+                            function["name"] = function["name"].replace(
+                                prev_function["name"], ""
+                            )
+                        if "arguments" in function:
+                            function["arguments"] = function["arguments"].replace(
+                                prev_function["arguments"], ""
+                            )
+
+        return resp_copy
+# ==================== 新增：缓存管理器 ====================
+class CacheManager:
+    def __init__(self, embeddings_model):
+        print("正在初始化缓存管理器...")
+        # 1. 初始化一个空的DataFrame作为“表格”
+        self.df = pd.DataFrame(columns=['Question', 'Answer'])
+        
+        # 2. 初始化一个内存中的FAISS作为“语义索引”
+        self.embeddings = embeddings_model
+        initial_doc = Document(page_content="placeholder_for_init", metadata={"answer": "init"})
+        self.vectorstore = FAISS.from_documents([initial_doc], self.embeddings)
+        
+        # 3. 设置相似度阈值
+        self.threshold = 0.25  # 使用我们之前讨论过的更合理的阈值
+
+    def add(self, question: str, answer: str):
+        """向缓存中添加一个新的问答对"""
+        # 更新DataFrame
+        new_row = pd.DataFrame([{'Question': question, 'Answer': answer}])
+        self.df = pd.concat([self.df, new_row], ignore_index=True)
+        
+        # 更新FAISS语义索引
+        new_doc = Document(page_content=question, metadata={'answer': answer})
+        self.vectorstore.add_documents([new_doc])
+        
+        print("💾 缓存已更新。当前缓存数量:", len(self.df))
+        # print("当前缓存表格:\n", self.df) # 可取消注释以查看表格
+
+    def search(self, query: str) -> str:
+        """根据语义相似度在缓存中搜索答案"""
+        print("🔍 正在缓存中搜索相似问答...")
+        results = self.vectorstore.similarity_search_with_score(query, k=1)
+        
+        if results and results[0][1] < self.threshold:
+            doc, score = results[0]
+            cached_question = doc.page_content
+            cached_answer = doc.metadata['answer']
+            
+            response = (
+                f"✅ 缓存命中 (相似度得分: {score:.3f})！\n"
+                f"相似的历史问题是: '{cached_question}'\n"
+                f"对应的答案是: {cached_answer}"
+            )
+            return response
+        
+        return "❌ 缓存中未找到足够相似的答案，请继续使用其他工具。"
+
+# 实例化缓存管理器
+cache_manager = CacheManager(embeddings)
+# ==================== 新增：创建缓存搜索工具 ====================
+cache_search_tool = Tool(
+    name="ConversationCacheSearch",
+    func=cache_manager.search,
+    description="【极其重要】在尝试任何其他工具之前，必须首先使用此工具检查历史最终答案。这样做可以避免重复回答整个问题。如果此工具返回具体的答案，直接使用该答案；如果返回'未找到'，你才可以继续尝试其他工具。"
+)
+# ==================== 修改：实现方案三的“数据暂存区” ====================
+class DataScratchpad:
+    """
+    一个具有模糊键名匹配功能的键值存储，用作Agent的短期工作记忆。
+    它使用语义搜索来查找最相似的键名，以提高容错性。
+    """
+    def __init__(self, embeddings_model):
+        self.data: Dict[str, Any] = {}
+        self.embeddings = embeddings_model
+        # 为键名创建一个专门的向量索引，初始为空
+        self.key_vectorstore: FAISS | None = None
+        self.key_similarity_threshold = 0.25 # 键名匹配的相似度阈值
+        print("📝 具备模糊匹配功能的数据暂存区 (Scratchpad) 已初始化。")
+
+    def save(self, key: str, value: Any) -> str:
+        """保存一个数据点到暂存区，并为键名建立索引。"""
+        # 1. 存储原始数据
+        self.data[key] = value
+        
+        # 2. 为键名本身创建并更新向量索引
+        new_key_doc = Document(page_content=key)
+        if self.key_vectorstore is None:
+            # 如果是第一次保存，则创建向量库
+            self.key_vectorstore = FAISS.from_documents([new_key_doc], self.embeddings)
+        else:
+            # 否则，将新键名添加到现有向量库
+            self.key_vectorstore.add_documents([new_key_doc])
+            
+        #print(f"暂存区保存: key='{key}', value={value}")
+        return f"数据点 '{key}' 已成功保存到暂存区。"
+
+    def retrieve(self, key: str) -> Any:
+        """通过语义搜索模糊匹配键名，从暂存区检索一个数据点。"""
+        if self.key_vectorstore is None:
+            return "暂存区为空，无法检索。"
+            
+        # 1. 对传入的 key 在已有的键名中进行语义搜索
+        results_with_scores = self.key_vectorstore.similarity_search_with_score(key, k=1)
+        
+        if results_with_scores and results_with_scores[0][1] < self.key_similarity_threshold:
+            # 如果找到了相似度足够高的键名
+            most_similar_key_doc, score = results_with_scores[0]
+            most_similar_key = most_similar_key_doc.page_content
+            
+            retrieved_value = self.data.get(most_similar_key, "内部错误：在字典中找不到已匹配的键。")
+            
+            #print(f"暂存区模糊检索成功: 传入key='{key}', 匹配到最相似key='{most_similar_key}' (得分: {score:.3f})")
+            return retrieved_value
+        
+        # 如果找不到足够相似的键名
+        #print(f"暂存区模糊检索失败: 传入key='{key}'，未找到相似的已存键名。")
+        return "未在暂存区中找到与该键名相关的数据。"
+
+# 【修改】实例化暂存区时传入 embeddings
+scratchpad = DataScratchpad(embeddings)
+
+# 【修改】优化工具描述，引导Agent生成规范的键名（仍然是好习惯）
+class SaveArgs(BaseModel):
+    key: str = Field(
+        description=(
+            "用于存储和检索数据的唯一标识符。强烈建议遵循【实体_属性】的命名规范，例如 '特斯拉_股价', '苹果公司_每股收益'。"
+            "键名应为标准化的、不含口语化词汇的字符串，以提高后续检索的准确性。"
+        )
+    )
+    value: Any = Field(description="要存储的原始数据值，可以是数字、字符串或字典。")
+
+class RetrieveArgs(BaseModel):
+    key: str = Field(
+        description=(
+            "要检索的数据的唯一标识符。即使不完全确定键名，系统也会尝试模糊匹配。但提供一个符合【实体_属性】规范的键名（如'特斯拉_股价'）会得到最准确的结果。"
+        )
+    )
+
+# 创建暂存区工具 (保持不变)
+save_tool = Tool.from_function(
+    func=scratchpad.save,
+    name="SaveToScratchpad",
+    description="当获取到一个重要的、未来可能用于计算的原始数据点（如股价、EPS）时，使用此工具将其保存到工作暂存区。",
+    args_schema=SaveArgs
+)
+retrieve_tool = Tool.from_function(
+    func=scratchpad.retrieve,
+    name="RetrieveFromScratchpad",
+    description="在调用外部API获取数据前，必须先用此工具检查工作暂存区中是否已存在所需的数据。这比调用API更快。",
+    args_schema=RetrieveArgs
+)
+# ==================== 修改结束 ====================
 # 加载***完整数据库***
 index_list = ["AM", "CN", "HK", "OT"]
 faiss_databases = {}
@@ -156,8 +349,6 @@ rag_prompt = ChatPromptTemplate.from_messages([
 
      若用户未提及某个标题的内容,默认为空。
 
-
-
      当前时间：{current_time}
 
      如果用户输入是一个完整的自然语言问题，请你仿照以下格式进行API描述，以生成更清晰的查询：
@@ -241,7 +432,6 @@ rag_prompt = ChatPromptTemplate.from_messages([
 
          ---
          示例结束 ---
-    如果用户输入不是一个完整的自然语言查询（如“是的”、“再查一次”、“用01810试试看”），请你结合下面的历史对话内容 chat_history，尽力补全用户的真实意图，然后再按照自然语言扩展规则进行扩展查询。
      请只返回最终需要寻找的API描述，不要添加任何解释或说明文字。
      """),
     ("placeholder", "{chat_history}"),
@@ -312,17 +502,25 @@ rag_prompt = PromptTemplate(
 # 初始化LLM
 # model = init_chat_model("deepseek-chat", model_provider="deepseek", seed=2025)
 
-model = ChatTongyi(
-    model="qwen-plus",  # 或 qwen-max / qwen-turbo 等
+model = FixedChatTongyi(
+    model="qwen-turbo",  # 或 qwen-max / qwen-turbo 等
     api_key=os.getenv("DASHSCOPE_API_KEY"),
 )
 
 # 配合语义分割以适应多API问题
-model_split = ChatTongyi(
+model_split = FixedChatTongyi(
     model="qwen-turbo",
     model_kwargs={"seed": 45},
-    api_key=os.getenv("DASHSCOPE_API_KEY")
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
 )
+history_prompt = ChatPromptTemplate.from_messages([
+    ("system",
+     """你是一个金融问题理解助手，需要根据智能体与用户的对话历史以及当前用户的输入准确判断出当前用户的查询需求以及附带的分析需求，并将用户的全部需求组织为一个完整的查询输出。
+     注意只输出你重新组织后的查询（问题），不要输出其余无关内容，更不要对查询进行解答！！！请你牢记这一点！！！"""),
+    ("placeholder", "{chat_history}"),
+    ("human", "{init_query}")
+])
+history_query_chain = history_prompt | model | StrOutputParser()
 
 rag_prompt_split = PromptTemplate(
     template =
@@ -446,6 +644,8 @@ prompt = ChatPromptTemplate.from_messages(
     2. 如果用户的问题需要查找数据、获取历史行情、调用接口等（如“请查找工商银行最近一周的收盘价”），你应当使用工具来完成。
 
     3. 当用户没有说明查询时间范围时，请默认查找最近的数据；如果最近无数据，可以适当往历史数据中查找。
+    
+    4. 用户有可能包含多个子查询，请确保你的回答响应了用户的所有意图。
 
     你的回答应简洁清晰，使用中文输出。"""),
 
@@ -492,6 +692,8 @@ while True:
         print("对话结束。")
         break
 
+    #query = history_query_chain.invoke({"init_query": query, "chat_history": memory.buffer})
+    #print(f"结合上下文推理后的查询：{query}")
     # RAG 和工具检索部分 (这部分仍然是每次查询都执行，因为工具的选择可能依赖于当前查询)
     begin_time_rag_process = time.time()
     splited_query = rag_llm_chain_split.invoke({"init_query": query})
@@ -534,38 +736,34 @@ while True:
 
     # 筛选出实际检索到的工具实例
     query_tools_instances = [tool for tool in all_tools if tool.name in query_tool_names]
+    # 3. 【修改】将RAG检索到的API工具和缓存工具\数据暂存区合并
+    final_tools = [cache_search_tool, save_tool, retrieve_tool] + query_tools_instances
+    print(f"✨ Agent本轮可用总工具: {[t.name for t in final_tools]}")
 
-    #对于根本不需要API的一些提问 处理方式一：
-    
-    if not query_tools_instances:
-        print("未检索到合适的API工具，正在尝试由语言模型直接回答...")
-        # 使用LLM直接回答，绕过 AgentExecutor
+    # 4. 创建并执行 Agent
+    # 如果一个工具都没有（既没有API工具，也没有缓存工具），则直接回答
+    if not final_tools:
+        print("无可用工具，正在尝试由语言模型直接回答...")
         direct_llm_response = model.invoke(query)
+        final_answer = direct_llm_response.content
+        print("\n[直接回答]:", final_answer)
+    else:
+        agent = create_tool_calling_agent(model, final_tools, prompt)
+        agent_executor = AgentExecutor(
+            agent=agent,
+            tools=final_tools, # 传入本轮所有可用工具
+            verbose=True,
+            memory=memory # 传入记忆对象
+        )
+        begin_time_llm_response = time.time()
+        response = agent_executor.invoke({"input": query})
+        end_time_llm_response = time.time()
+        print(f"LLM回答时间: {end_time_llm_response - begin_time_llm_response:.2f} 秒")
+        final_answer = response["output"]
+        print("\nAgent的最终回答:")
+        print(final_answer)
 
-        print("\n语言模型直接回答:")
-        print(direct_llm_response.content)
-        continue  # 跳过后续 agent 执行，进入下一轮对话
-    
-
-    # 4. 创建 Agent 和 AgentExecutor
-    # AgentExecutor 只需要创建一次，因为它会内部管理记忆
-    # 每次调用 invoke 时，它会自动更新记忆并将其传递给Agent
-    agent = create_tool_calling_agent(model, query_tools_instances, prompt)
-    agent_executor = AgentExecutor(
-        agent=agent,
-        tools=query_tools_instances, # 传入本次查询筛选出的工具
-        verbose=True,
-        memory=memory # 传入记忆对象
-    )
-
-    begin_time_llm_response = time.time()
-    # 调用 AgentExecutor，它会自动处理记忆
-    response = agent_executor.invoke({"input": query})
-    end_time_llm_response = time.time()
-    print(f"LLM回答时间: {end_time_llm_response - begin_time_llm_response} 秒")
-
-    print("\nAgent的最终回答:")
-    print(response["output"]) # 访问 AgentExecutor 的输出
-    # 记忆会自动更新，无需手动添加
-
+    # 5. 【新增】将本轮的最终答案计入缓存
+    # 使用原始问题和最终答案来更新缓存
+    cache_manager.add(query, final_answer)
 
