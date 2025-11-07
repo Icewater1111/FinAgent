@@ -7,7 +7,7 @@ import json
 from typing import Any, Dict
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_community.chat_models import ChatTongyi
@@ -19,12 +19,8 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 from all_tool import all_tools, load_dict_from_json # 确保这些是正确的导入路径
 print("main.py中datetime是什么类型？", type(datetime), datetime)
 import pandas as pd  # 新增导入 pandas
-<<<<<<< HEAD
 from langchain.tools import tool # 新增导入 Tool
 from langchain.tools import Tool
-=======
-from langchain.tools import Tool # 新增导入 Tool
->>>>>>> e59963395a20a25dd4df91318f780912039f6508
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 now = datetime.now()
@@ -94,6 +90,13 @@ class FixedChatTongyi(ChatTongyi):
                             )
 
         return resp_copy
+# 新增质检员的相关内容 为结构化输出定义 Pydantic 模型
+class AnswerEvaluation(BaseModel):
+    """用于评估和修正Agent回答的数据模型。"""
+    is_valid_answer: bool = Field(description="回答是否是一个有效的、信息丰富的答案，而不是错误报告或空洞的回复。")
+    should_cache: bool = Field(description="综合判断，这个回答是否质量高到值得存入缓存，供未来直接使用。")
+    revised_answer: str = Field(description="经过合规性审查和修正后的最终回答文本，将直接展示给用户。")
+    reasoning: str = Field(description="对以上判断的简要说明，便于调试。")
 # ==================== 新增：缓存管理器 ====================
 class CacheManager:
     def __init__(self, embeddings_model):
@@ -107,7 +110,7 @@ class CacheManager:
         self.vectorstore = FAISS.from_documents([initial_doc], self.embeddings)
         
         # 3. 设置相似度阈值
-        self.threshold = 0.25  # 使用我们之前讨论过的更合理的阈值
+        self.threshold = 0.2  # 使用我们之前讨论过的更合理的阈值
 
     def add(self, question: str, answer: str):
         """向缓存中添加一个新的问答对"""
@@ -120,7 +123,7 @@ class CacheManager:
         self.vectorstore.add_documents([new_doc])
         
         print("💾 缓存已更新。当前缓存数量:", len(self.df))
-        # print("当前缓存表格:\n", self.df) # 可取消注释以查看表格
+        print("当前缓存表格:\n", self.df) # 可取消注释以查看表格
 
     def search(self, query: str) -> str:
         """根据语义相似度在缓存中搜索答案"""
@@ -147,23 +150,18 @@ cache_manager = CacheManager(embeddings)
 cache_search_tool = Tool(
     name="ConversationCacheSearch",
     func=cache_manager.search,
-    description="【极其重要】在尝试任何其他工具之前，必须首先使用此工具检查历史最终答案。这样做可以避免重复回答整个问题。如果此工具返回具体的答案，直接使用该答案；如果返回'未找到'，你才可以继续尝试其他工具。"
+    description="【最高优先级，任务起点】在开始任何新任务前，必须首先调用此工具。它用于检查是否存在一个与用户当前问题高度相似的历史问答，并返回其完整的最终答案。如果此工具返回了一个具体的答案，应直接采纳该答案并结束任务。只有当此工具明确返回'未找到'时，才应继续执行其他步骤来从头解决问题。"
 )
 # ==================== 修改：实现方案三的“数据暂存区” ====================
 class DataScratchpad:
     """
     一个具有模糊键名匹配功能的键值存储，用作Agent的短期工作记忆。
-<<<<<<< HEAD
-=======
-    它使用语义搜索来查找最相似的键名，以提高容错性。
->>>>>>> e59963395a20a25dd4df91318f780912039f6508
     """
     def __init__(self, embeddings_model):
         self.data: Dict[str, Any] = {}
         self.embeddings = embeddings_model
-<<<<<<< HEAD
         self.key_vectorstore: FAISS | None = None
-        self.key_similarity_threshold = 0.25
+        self.key_similarity_threshold = 0.2
         print("📝 具备模糊匹配功能的数据暂存区 (Scratchpad) 已初始化。")
 
     def _save_data(self, key: str, value: Any):
@@ -190,50 +188,6 @@ class DataScratchpad:
             return retrieved_value
         
         print(f"暂存区模糊检索失败: 传入key='{key}'，未找到相似的已存键名。")
-=======
-        # 为键名创建一个专门的向量索引，初始为空
-        self.key_vectorstore: FAISS | None = None
-        self.key_similarity_threshold = 0.25 # 键名匹配的相似度阈值
-        print("📝 具备模糊匹配功能的数据暂存区 (Scratchpad) 已初始化。")
-
-    def save(self, key: str, value: Any) -> str:
-        """保存一个数据点到暂存区，并为键名建立索引。"""
-        # 1. 存储原始数据
-        self.data[key] = value
-        
-        # 2. 为键名本身创建并更新向量索引
-        new_key_doc = Document(page_content=key)
-        if self.key_vectorstore is None:
-            # 如果是第一次保存，则创建向量库
-            self.key_vectorstore = FAISS.from_documents([new_key_doc], self.embeddings)
-        else:
-            # 否则，将新键名添加到现有向量库
-            self.key_vectorstore.add_documents([new_key_doc])
-            
-        #print(f"暂存区保存: key='{key}', value={value}")
-        return f"数据点 '{key}' 已成功保存到暂存区。"
-
-    def retrieve(self, key: str) -> Any:
-        """通过语义搜索模糊匹配键名，从暂存区检索一个数据点。"""
-        if self.key_vectorstore is None:
-            return "暂存区为空，无法检索。"
-            
-        # 1. 对传入的 key 在已有的键名中进行语义搜索
-        results_with_scores = self.key_vectorstore.similarity_search_with_score(key, k=1)
-        
-        if results_with_scores and results_with_scores[0][1] < self.key_similarity_threshold:
-            # 如果找到了相似度足够高的键名
-            most_similar_key_doc, score = results_with_scores[0]
-            most_similar_key = most_similar_key_doc.page_content
-            
-            retrieved_value = self.data.get(most_similar_key, "内部错误：在字典中找不到已匹配的键。")
-            
-            #print(f"暂存区模糊检索成功: 传入key='{key}', 匹配到最相似key='{most_similar_key}' (得分: {score:.3f})")
-            return retrieved_value
-        
-        # 如果找不到足够相似的键名
-        #print(f"暂存区模糊检索失败: 传入key='{key}'，未找到相似的已存键名。")
->>>>>>> e59963395a20a25dd4df91318f780912039f6508
         return "未在暂存区中找到与该键名相关的数据。"
 
 # 【修改】实例化暂存区时传入 embeddings
@@ -241,7 +195,6 @@ scratchpad = DataScratchpad(embeddings)
 
 # 【修改】优化工具描述，引导Agent生成规范的键名（仍然是好习惯）
 class SaveArgs(BaseModel):
-<<<<<<< HEAD
     key: str = Field(description="用于存储和检索数据的唯一标识符。强烈建议遵循【实体_属性】的命名规范，例如 '特斯拉_股价'。")
     value: Any = Field(description="要存储的原始数据值，可以是数字、字符串或字典。")
 
@@ -252,45 +205,15 @@ class RetrieveArgs(BaseModel):
 # 创建暂存区工具 (保持不变)
 @tool(args_schema=SaveArgs)
 def save_to_scratchpad(key: str, value: Any) -> str:
-    """在你通过调用别的工具得到了好结果后，一定要调用该工具！当获取到一个重要的、未来可能用于计算的原始数据点（如股价、EPS）时，使用此工具将其保存到工作暂存区。"""
+    """【暂存中间结果】当你通过外部API工具成功获取到一个可复用的原始数据点（例如一个具体的股价、财报数字、指标）后，应立即使用此工具将其存入工作暂存区，以便在当前任务的后续步骤中直接使用。键名(key)应严格遵循'实体_属性'格式，例如 key='特斯拉_股价', value=200。"""
     scratchpad._save_data(key, value)
     print(f"暂存区保存: key='{key}', value={value}")
     return f"数据点 '{key}' 已成功保存到暂存区。"
 
 @tool(args_schema=RetrieveArgs)
 def retrieve_from_scratchpad(key: str) -> Any:
-    """请你首先调用该工具！在调用外部API获取数据前，必须先用此工具检查工作暂存区中是否已存在所需的数据。这比调用API更快。"""
+    """【API调用前检查】在调用任何外部API（如查询股价、财报的工具）来获取原始数据之前，必须先使用此工具，通过一个描述性的键名（key）来检查工作暂存区中是否已存在所需的数据点。这可以避免不必要的API调用。例如，在需要特斯拉股价时，先用 key='特斯拉_股价' 在此检索。"""
     return scratchpad._retrieve_data(key)
-=======
-    key: str = Field(
-        description=(
-            "用于存储和检索数据的唯一标识符。强烈建议遵循【实体_属性】的命名规范，例如 '特斯拉_股价', '苹果公司_每股收益'。"
-            "键名应为标准化的、不含口语化词汇的字符串，以提高后续检索的准确性。"
-        )
-    )
-    value: Any = Field(description="要存储的原始数据值，可以是数字、字符串或字典。")
-
-class RetrieveArgs(BaseModel):
-    key: str = Field(
-        description=(
-            "要检索的数据的唯一标识符。即使不完全确定键名，系统也会尝试模糊匹配。但提供一个符合【实体_属性】规范的键名（如'特斯拉_股价'）会得到最准确的结果。"
-        )
-    )
-
-# 创建暂存区工具 (保持不变)
-save_tool = Tool.from_function(
-    func=scratchpad.save,
-    name="SaveToScratchpad",
-    description="当获取到一个重要的、未来可能用于计算的原始数据点（如股价、EPS）时，使用此工具将其保存到工作暂存区。",
-    args_schema=SaveArgs
-)
-retrieve_tool = Tool.from_function(
-    func=scratchpad.retrieve,
-    name="RetrieveFromScratchpad",
-    description="在调用外部API获取数据前，必须先用此工具检查工作暂存区中是否已存在所需的数据。这比调用API更快。",
-    args_schema=RetrieveArgs
-)
->>>>>>> e59963395a20a25dd4df91318f780912039f6508
 # ==================== 修改结束 ====================
 # 加载***完整数据库***
 index_list = ["AM", "CN", "HK", "OT"]
@@ -564,11 +487,7 @@ rag_prompt = PromptTemplate(
 # model = init_chat_model("deepseek-chat", model_provider="deepseek", seed=2025)
 
 model = FixedChatTongyi(
-<<<<<<< HEAD
     model="qwen-max",  # 或 qwen-max / qwen-turbo 等
-=======
-    model="qwen-turbo",  # 或 qwen-max / qwen-turbo 等
->>>>>>> e59963395a20a25dd4df91318f780912039f6508
     api_key=os.getenv("DASHSCOPE_API_KEY"),
 )
 
@@ -578,16 +497,51 @@ model_split = FixedChatTongyi(
     model_kwargs={"seed": 45},
     api_key=os.getenv("DASHSCOPE_API_KEY"),
 )
+# 新增一个专门用于质检的LLM实例
+judge_llm = FixedChatTongyi(
+    model="qwen-turbo", # 使用一个速度快、成本效益高的模型
+    model_kwargs={"seed": 123},
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
+)
+# 1. 创建 Pydantic 解析器
+pydantic_parser = PydanticOutputParser(pydantic_object=AnswerEvaluation)
+
+# 2. 创建质检 Prompt
+evaluation_prompt = ChatPromptTemplate.from_messages([
+    ("system",
+     """你是一个资深的AI回答质检员，负责审查金融领域AI助手的回答。
+你的任务是根据用户的【原问题】和AI助手的【待评估的回答】，从【有效性】和【合规性】两个维度进行评估，并输出一个JSON对象。
+
+**评估标准:**
+
+1.  **有效性判断 (is_valid_answer):**
+    - **有效回答 (True):** 提供了具体数据、分析、计算结果或相关信息，成功地回应了用户问题。
+    - **无效回答 (False):** 包含明确的错误信息（如“网络连接失败”、“API调用出错”、“超时”），或实质为空的回答（如“查询无结果”、“找不到相关信息”、“我无法回答这个问题”）。
+
+2.  **合规性审查与修正 (revised_answer):**
+    - **禁止投资建议:** 任何暗示买卖、推荐具体股票或带有强烈主观倾向的判断，都必须改写为中立客观的陈述。如果无法避免，必须在回答末尾添加免责声明。
+    - **添加免责声明:** 如果回答涉及预测、估值或看起来像投资建议，请在末尾统一追加：\n\n【免责声明：以上内容仅供参考，不构成任何投资建议。】
+    - **保持中立:** 移除任何带有感情色彩或夸张的词汇。
+    - **内容安全:** 确保回答不包含任何违法、不道德或攻击性的内容。
+
+3.  **缓存决策 (should_cache):**
+    - 只有当 `is_valid_answer` 为 `True` 且回答内容详实、合理时，`should_cache` 才应为 `True`。
+    - 对于无效回答或质量较低的回答，`should_cache` 必须为 `False`。
+
+**输出格式:**
+你必须严格按照以下JSON格式进行输出，不要添加任何其他解释性文字。
+{format_instructions}
+"""),
+    ("human", "【原问题】:\n{query}\n\n【待评估的回答】:\n{answer}")
+]).partial(format_instructions=pydantic_parser.get_format_instructions())
+
+# 3. 组合成完整的评估链
+evaluation_chain = evaluation_prompt | judge_llm | pydantic_parser
 history_prompt = ChatPromptTemplate.from_messages([
     ("system",
-<<<<<<< HEAD
      """你是一个金融问题理解助手。你的任务是：根据智能体与用户的对话历史以及当前用户的输入，准确判断并整理出用户当前的查询需求及相关分析需求，输出重新组织用户需求后的完整查询内容。
      注意：禁止对用户的查询或提问进行任何形式的解释、分析、推理或回答。禁止直接回应用户的需求。输出必须是一个问题或查询。
      输出中不得包含任何额外内容（例如提示语、解释性文字或结论）"""),
-=======
-     """你是一个金融问题理解助手，需要根据智能体与用户的对话历史以及当前用户的输入准确判断出当前用户的查询需求以及附带的分析需求，并将用户的全部需求组织为一个完整的查询输出。
-     注意只输出你重新组织后的查询（问题），不要输出其余无关内容，更不要对查询进行解答！！！请你牢记这一点！！！"""),
->>>>>>> e59963395a20a25dd4df91318f780912039f6508
     ("placeholder", "{chat_history}"),
     ("human", "{init_query}")
 ])
@@ -701,27 +655,37 @@ memory = ConversationBufferWindowMemory(
 
 prompt = ChatPromptTemplate.from_messages(
     [
-        ("system", f"""你是一个专业的金融助手，当前时间为 {now}。
-    你的任务是帮助用户获取与金融相关的数据、解释、分析或回答问题。
-    你可以调用一组 API 工具来获取股票、基金、宏观经济等数据。
+        ("system", f"""你是一个高效、智能的顶级金融分析助手，当前时间为 {now}。
+你的核心任务是利用可用工具，准确、快速地回答用户的金融问题。
 
-    请按照以下规则操作：
-    1. 如果用户的问题是一个自然语言查询，例如：
-    - “什么是市盈率？”
-    - “你是谁？”
-    - “请解释一下ETF的分类。”
-    这类问题不需要调用 API 工具，请你直接用自己的知识回答用户。
+为了最高效地完成任务，你必须理解并区分两种可用的记忆辅助工具：
+- **对话缓存 (ConversationCacheSearch)**: 这是你的长期记忆。它存储了过去已经完整回答过且回答良好的问题和答案。
+- **工作暂存区 (retrieve/save_from_scratchpad)**: 这是你的短期草稿纸。它存储了在解决当前问题过程中获取到的原始数据点（如股价、市盈率等）。
 
-    2. 如果用户的问题需要查找数据、获取历史行情、调用接口等（如“请查找工商银行最近一周的收盘价”），你应当使用工具来完成。
+你必须严格遵守以下【四步工作流程】：
 
-    3. 当用户没有说明查询时间范围时，请默认查找最近的数据；如果最近无数据，可以适当往历史数据中查找。
-    
-    4. 用户有可能包含多个子查询，请确保你的回答响应了用户的所有意图。
+**第一步：检查长期记忆（对话缓存）**
+   - 永远首先调用 `ConversationCacheSearch` 工具，检查是否已经回答过完全相同或非常相似的问题。
+   - 如果找到答案，直接返回该答案，任务结束。
 
-    以下是最重要的事，请你一定要严格满足以下要求：
-         1.要首先调用retrieve_from_scratchpad，检查工作暂存区中是否已存在所需的数据，这比调用API更快。
-         2.没有的话再去调用cache_search_tool和别的API_tool来获取答案。
-         3.得到答案后不要急于结束回答，一定要调用save_to_scratchpad工具来进行缓存和数据暂存，你的回答应简洁清晰，使用中文输出。"""),
+**第二步：规划并执行任务**
+   - 如果缓存未命中，你需要分析用户的问题，规划如何获取数据来构建答案。
+   - 在调用任何外部API工具（例如，`get_stock_price`, `get_financial_reports`等）获取一个具体的数据点之前，必须先调用 `retrieve_from_scratchpad` 工具，检查你的“草稿纸”上是否已经有这个数据。
+   - 如果暂存区没有，才去调用相应的外部API工具获取数据。
+
+**第三步：记录到草稿纸（工作暂存区）**
+   - 每当你通过外部API工具成功获得一个原始数据点（数字、文本等），必须立即调用 `save_to_scratchpad` 工具，将其记录到你的“草稿纸”上。这对于需要多个数据进行计算的复杂问题至关重要。
+
+**第四步：综合并给出最终答案**
+   - 当你收集齐所有需要的数据后，进行最终的计算、分析或整理，并向用户提供清晰、完整的答案。
+
+---
+**其他重要规则:**
+- **直接回答**: 如果用户的问题不涉及数据查询，而是概念解释（如“什么是市盈率？”）、打招呼或一般性对话，请直接用你的知识回答，不要使用工具。
+- **多步任务**: 如果一个问题需要多个数据点（例如“比较苹果和微软的市盈率”），请严格遵循上述流程，分别为苹果和微软执行“检查暂存区 -> 调用API -> 保存到暂存区”的步骤。
+- **默认时间**: 当用户没有说明查询时间范围时，请默认查找最近的数据。
+- **响应完整性**: 确保你的最终回答响应了用户问题的所有部分。
+"""),
 
         ("placeholder", "{chat_history}"),   # 保留记忆
         ("human", "{input}"),                # 用户输入
@@ -766,19 +730,14 @@ while True:
         print("对话结束。")
         break
 
-<<<<<<< HEAD
     query = history_query_chain.invoke({"init_query": query, "chat_history": memory.buffer})
     print(f"结合上下文推理后的查询：{query}")
-=======
-    #query = history_query_chain.invoke({"init_query": query, "chat_history": memory.buffer})
-    #print(f"结合上下文推理后的查询：{query}")
->>>>>>> e59963395a20a25dd4df91318f780912039f6508
     # RAG 和工具检索部分 (这部分仍然是每次查询都执行，因为工具的选择可能依赖于当前查询)
     begin_time_rag_process = time.time()
     splited_query = rag_llm_chain_split.invoke({"init_query": query})
     splited_query_list = split_numbered_items(splited_query)
     mode = 1
-    topk = 5
+    topk = 3
     async def main():
         # 1️⃣ 并发扩展查询
         last_query_list = await asyncio.gather(*[
@@ -816,11 +775,7 @@ while True:
     # 筛选出实际检索到的工具实例
     query_tools_instances = [tool for tool in all_tools if tool.name in query_tool_names]
     # 3. 【修改】将RAG检索到的API工具和缓存工具\数据暂存区合并
-<<<<<<< HEAD
     final_tools = [cache_search_tool, save_to_scratchpad, retrieve_from_scratchpad] + query_tools_instances
-=======
-    final_tools = [cache_search_tool, save_tool, retrieve_tool] + query_tools_instances
->>>>>>> e59963395a20a25dd4df91318f780912039f6508
     print(f"✨ Agent本轮可用总工具: {[t.name for t in final_tools]}")
 
     # 4. 创建并执行 Agent
@@ -828,29 +783,51 @@ while True:
     if not final_tools:
         print("无可用工具，正在尝试由语言模型直接回答...")
         direct_llm_response = model.invoke(query)
-        final_answer = direct_llm_response.content
-        print("\n[直接回答]:", final_answer)
+        raw_final_answer = direct_llm_response.content
+        print("\n[直接回答]:", raw_final_answer)
     else:
         agent = create_tool_calling_agent(model, final_tools, prompt)
         agent_executor = AgentExecutor(
             agent=agent,
             tools=final_tools, # 传入本轮所有可用工具
             verbose=True,
-<<<<<<< HEAD
-            #memory=memory # 传入记忆对象
-=======
             memory=memory # 传入记忆对象
->>>>>>> e59963395a20a25dd4df91318f780912039f6508
         )
         begin_time_llm_response = time.time()
         response = agent_executor.invoke({"input": query})
         end_time_llm_response = time.time()
         print(f"LLM回答时间: {end_time_llm_response - begin_time_llm_response:.2f} 秒")
-        final_answer = response["output"]
-        print("\nAgent的最终回答:")
-        print(final_answer)
+        raw_final_answer = response["output"]
+        print("\n[待审查]Agent的最终回答:")
+        print(raw_final_answer)
 
-    # 5. 【新增】将本轮的最终答案计入缓存
-    # 使用原始问题和最终答案来更新缓存
-    cache_manager.add(query, final_answer)
+        # ==================== 新增：回答评估与修正模块 ====================
+        print("\n🔬 正在对回答进行质检和合规性审查...")
+        try:
+            evaluation_result = evaluation_chain.invoke({
+                "query": query,
+                "answer": raw_final_answer
+            })
+
+            # 使用经过修正的最终答案
+            final_answer_to_display = evaluation_result.revised_answer
+
+            print("\n[最终] 修正后的回答:")
+            print(final_answer_to_display)
+
+            # 根据质检结果，有条件地存入缓存
+            if evaluation_result.should_cache:
+                # 注意：我们应该将修正后的、高质量的答案存入缓存
+                cache_manager.add(query, final_answer_to_display)
+                print("\n✅ 评估通过，高质量回答已存入缓存。")
+            else:
+                print(f"\n❌ 评估未通过，原因: {evaluation_result.reasoning}。此回答将不会被缓存。")
+        
+        except Exception as e:
+            print(f"\n⚠️ 回答评估步骤出错: {e}")
+            print("将以降级模式处理：直接展示原始回答，且不进行缓存。")
+            final_answer_to_display = raw_final_answer
+            print("\n[原始] Agent的回答:")
+            print(final_answer_to_display)
+        # ========================== 模块结束 ============================
 
