@@ -4,7 +4,8 @@ import time
 from datetime import datetime
 from dotenv import load_dotenv
 import json
-from typing import Any, Dict
+import re
+from typing import Any, Dict, Tuple
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
@@ -90,13 +91,12 @@ class FixedChatTongyi(ChatTongyi):
                             )
 
         return resp_copy
-# 新增质检员的相关内容 为结构化输出定义 Pydantic 模型
-class AnswerEvaluation(BaseModel):
-    """用于评估和修正Agent回答的数据模型。"""
-    is_valid_answer: bool = Field(description="回答是否是一个有效的、信息丰富的答案，而不是错误报告或空洞的回复。")
-    should_cache: bool = Field(description="综合判断，这个回答是否质量高到值得存入缓存，供未来直接使用。")
-    revised_answer: str = Field(description="经过合规性审查和修正后的最终回答文本，将直接展示给用户。")
-    reasoning: str = Field(description="对以上判断的简要说明，便于调试。")
+class SynthesizerOutput(BaseModel):
+    """定义了管理者/整合者Chain的最终输出结构。"""
+    final_answer: str = Field(description="整合所有中间步骤后，生成给用户的最终答案。")
+    data_to_scratchpad: list[Dict[str, Any]] = Field(description="一个字典列表，包含需要存入数据暂存区的数据。每个字典应有 'key' 和 'value' 两个键。例如：[{'key': '特斯拉_股价', 'value': 200}]。")
+    should_cache: bool = Field(description="综合判断，这个回答是否质量高到值得存入长期缓存。")
+    reasoning: str = Field(description="对以上决策（特别是缓存决策）的简要说明。")
 # ==================== 新增：缓存管理器 ====================
 class CacheManager:
     def __init__(self, embeddings_model):
@@ -110,7 +110,7 @@ class CacheManager:
         self.vectorstore = FAISS.from_documents([initial_doc], self.embeddings)
         
         # 3. 设置相似度阈值
-        self.threshold = 0.2  # 使用我们之前讨论过的更合理的阈值
+        self.threshold = 0.25  # 使用我们之前讨论过的更合理的阈值
 
     def add(self, question: str, answer: str):
         """向缓存中添加一个新的问答对"""
@@ -161,7 +161,7 @@ class DataScratchpad:
         self.data: Dict[str, Any] = {}
         self.embeddings = embeddings_model
         self.key_vectorstore: FAISS | None = None
-        self.key_similarity_threshold = 0.2
+        self.key_similarity_threshold = 0.25
         print("📝 具备模糊匹配功能的数据暂存区 (Scratchpad) 已初始化。")
 
     def _save_data(self, key: str, value: Any):
@@ -199,13 +199,13 @@ class SaveArgs(BaseModel):
     value: Any = Field(description="要存储的原始数据值，可以是数字、字符串或字典。")
 
 class RetrieveArgs(BaseModel):
-    key: str = Field(description="要检索的数据的唯一标识符。即使不完全确定键名，系统也会尝试模糊匹配。提供一个规范的键名（如'特斯拉_股价'）会得到最准确的结果。")
+    key: str = Field(description="要检索的数据的唯一标识符。即使不完全确定键名，系统也会尝试模糊匹配。提供一个规范的键名，会得到最准确的结果。")
 
 
 # 创建暂存区工具 (保持不变)
 @tool(args_schema=SaveArgs)
 def save_to_scratchpad(key: str, value: Any) -> str:
-    """【暂存中间结果】当你通过外部API工具成功获取到一个可复用的原始数据点（例如一个具体的股价、财报数字、指标）后，应立即使用此工具将其存入工作暂存区，以便在当前任务的后续步骤中直接使用。键名(key)应严格遵循'实体_属性'格式，例如 key='特斯拉_股价', value=200。"""
+    """【暂存中间结果】当你通过外部API工具成功获取到一个可复用的原始数据点（例如一个具体的股价、财报数字、指标）后，应立即使用此工具将其存入数据暂存区，以便在当前任务的后续步骤中直接使用。键名(key)应严格遵循'实体_属性'格式，例如 key='特斯拉_股价', value=200。"""
     scratchpad._save_data(key, value)
     print(f"暂存区保存: key='{key}', value={value}")
     return f"数据点 '{key}' 已成功保存到暂存区。"
@@ -504,48 +504,73 @@ judge_llm = FixedChatTongyi(
     api_key=os.getenv("DASHSCOPE_API_KEY"),
 )
 # 1. 创建 Pydantic 解析器
-pydantic_parser = PydanticOutputParser(pydantic_object=AnswerEvaluation)
+synthesizer_parser = PydanticOutputParser(pydantic_object=SynthesizerOutput)
 
-# 2. 创建质检 Prompt
-evaluation_prompt = ChatPromptTemplate.from_messages([
-    ("system",
-     """你是一个资深的AI回答质检员，负责审查金融领域AI助手的回答。
-你的任务是根据用户的【原问题】和AI助手的【待评估的回答】，从【有效性】和【合规性】两个维度进行评估，并输出一个JSON对象。
-
-**评估标准:**
-
-1.  **有效性判断 (is_valid_answer):**
-    - **有效回答 (True):** 提供了具体数据、分析、计算结果或相关信息，成功地回应了用户问题。
-    - **无效回答 (False):** 包含明确的错误信息（如“网络连接失败”、“API调用出错”、“超时”），或实质为空的回答（如“查询无结果”、“找不到相关信息”、“我无法回答这个问题”）。
-
-2.  **合规性审查与修正 (revised_answer):**
-    - **禁止投资建议:** 任何暗示买卖、推荐具体股票或带有强烈主观倾向的判断，都必须改写为中立客观的陈述。如果无法避免，必须在回答末尾添加免责声明。
-    - **添加免责声明:** 如果回答涉及预测、估值或看起来像投资建议，请在末尾统一追加：\n\n【免责声明：以上内容仅供参考，不构成任何投资建议。】
-    - **保持中立:** 移除任何带有感情色彩或夸张的词汇。
-    - **内容安全:** 确保回答不包含任何违法、不道德或攻击性的内容。
-
-3.  **缓存决策 (should_cache):**
-    - 只有当 `is_valid_answer` 为 `True` 且回答内容详实、合理时，`should_cache` 才应为 `True`。
-    - 对于无效回答或质量较低的回答，`should_cache` 必须为 `False`。
-
-**输出格式:**
-你必须严格按照以下JSON格式进行输出，不要添加任何其他解释性文字。
-{format_instructions}
-"""),
-    ("human", "【原问题】:\n{query}\n\n【待评估的回答】:\n{answer}")
-]).partial(format_instructions=pydantic_parser.get_format_instructions())
-
-# 3. 组合成完整的评估链
-evaluation_chain = evaluation_prompt | judge_llm | pydantic_parser
 history_prompt = ChatPromptTemplate.from_messages([
     ("system",
-     """你是一个金融问题理解助手。你的任务是：根据智能体与用户的对话历史以及当前用户的输入，准确判断并整理出用户当前的查询需求及相关分析需求，输出重新组织用户需求后的完整查询内容。
+     """你是一个金融问题理解助手。
+     你的任务是：根据智能体与用户的对话历史以及当前用户的输入，首先准确判断并整理出用户当前的查询需求及相关分析需求，
+     如果涉及金融数据或相关金融信息查询(如股票、债券、公司信息、金融新闻舆情等等)或任何需要结合金融信息的分析性问题，则以如下格式输出重新组织用户需求后的完整查询内容："True,[重新组织后的查询]"
      注意：禁止对用户的查询或提问进行任何形式的解释、分析、推理或回答。禁止直接回应用户的需求。输出必须是一个问题或查询。
-     输出中不得包含任何额外内容（例如提示语、解释性文字或结论）"""),
+     输出中不得包含任何额外内容（例如提示语、解释性文字或结论）
+     如果用户的问题属于概念解释（如“什么是市盈率？”）、打招呼或一般性对话，则输出："False,[重新组织后的查询]"
+     """),
     ("placeholder", "{chat_history}"),
     ("human", "{init_query}")
 ])
 history_query_chain = history_prompt | model | StrOutputParser()
+
+# ==================== 新增：为闲聊创建专用的对话链 ====================
+chat_prompt = ChatPromptTemplate.from_messages([
+    ("system", "你是一个友好、乐于助人的AI助手。请根据对话历史和用户当前的问题，提供一个流畅、有帮助的回答。"),
+    ("placeholder", "{chat_history}"),
+    ("human", "{input}")
+])
+
+def _strip_matching_quotes(s: str) -> str:
+    s = s.strip()
+    if len(s) >= 2 and ((s[0] == s[-1] == '"') or (s[0] == s[-1] == "'")):
+        return s[1:-1].strip()
+    return s
+
+
+def parse_history_output(text: str) -> Tuple[bool, str]:
+    """
+    解析 history_prompt 的输出格式，返回 (flag, content)：
+      - flag: bool，表示 True/False（对大小写不敏感）
+      - content: str，方括号中的文本或逗号后面的原始文本（去掉外层引号与首尾空白）
+
+    支持的输入形式举例：
+      "True,[重新组织后的查询]"
+      "False,[用户原始输入]"
+      "true, 这是没有方括号的内容"
+      "False, '原始输入在引号内'"
+
+    在无法解析时抛出 ValueError。
+    """
+    if text is None:
+        raise ValueError("输入为空")
+
+    txt = text.strip()
+
+    # 1) 尝试匹配带方括号的形式： True,[...]
+    m = re.match(r'^\s*(True|False)\s*,\s*\[\s*(.*)\s*\]\s*$', txt, flags=re.IGNORECASE | re.DOTALL)
+    if m:
+        flag_str = m.group(1).lower()
+        content = m.group(2)
+        content = _strip_matching_quotes(content)
+        return (flag_str == 'true', content)
+
+    # 2) 回退：匹配不带方括号的形式： True,内容
+    m2 = re.match(r'^\s*(True|False)\s*,\s*(.*)$', txt, flags=re.IGNORECASE | re.DOTALL)
+    if m2:
+        flag_str = m2.group(1).lower()
+        content = m2.group(2).strip()
+        content = _strip_matching_quotes(content)
+        return (flag_str == 'true', content)
+
+    # 3) 都不匹配 -> 报错
+    raise ValueError(f"无法解析输入：{text!r}")
 
 rag_prompt_split = PromptTemplate(
     template =
@@ -631,11 +656,40 @@ def extract_market_category(llm_response_text: str) -> str | None:
             return None # 如果提取的分类不在预期列表中，则视为无效
     else:
         return None # 如果字符串太短，无法提取分类
-    
+
+def format_intermediate_steps(intermediate_steps: list) -> str:
+    """
+    将 AgentExecutor 返回的原始 intermediate_steps 格式化为
+    一个对 LLM 更友好的、简洁的字符串。
+    """
+    if not intermediate_steps:
+        return "执行者 Agent 未调用任何工具。"
+
+    log_parts = []
+    for i, (action, observation) in enumerate(intermediate_steps):
+        # action 是 ToolAgentAction 对象
+        # observation 是工具返回的字符串结果
+        
+        tool_name = action.tool
+        tool_input = action.tool_input
+        
+        # 将工具输入（通常是字典）转换为易读的JSON字符串
+        # ensure_ascii=False 保证中文字符正常显示
+        tool_input_str = json.dumps(tool_input, ensure_ascii=False, indent=2)
+
+        log_parts.append(
+            f"步骤 {i+1}: 工具调用\n"
+            f"---工具名称: `{tool_name}`\n"
+            f"---工具输入:\n```json\n{tool_input_str}\n```\n"
+            f"---工具输出:\n```\n{observation}\n```"
+        )
+        
+    return "\n---\n".join(log_parts)
+
 # 构建加工链
 key_rag_llm_chain = key_rag_prompt.partial(current_time=str(datetime.now())) | model | StrOutputParser()
 rag_llm_chain = rag_prompt.partial(current_time=str(datetime.now())) | model | StrOutputParser()
-
+chat_chain = chat_prompt | model | StrOutputParser()
 
 # 1. 实例化记忆模块
 # memory_key 必须与 ChatPromptTemplate 中用于历史对话的 placeholder 名称一致
@@ -652,46 +706,91 @@ memory = ConversationBufferWindowMemory(
 
 #对于不需要API调用的提问 处理方式二：
 #经过测试 不正确 openai规范中传入agent的tool不能为空列表
-
-prompt = ChatPromptTemplate.from_messages(
+worker_prompt = ChatPromptTemplate.from_messages(
     [
-        ("system", f"""你是一个高效、智能的顶级金融分析助手，当前时间为 {now}。
-你的核心任务是利用可用工具，准确、快速地回答用户的金融问题。
+        ("system", f"""你是一个高效、智能、严谨的顶级金融数据收集助手，当前时间为 {now}。
+你的唯一任务是根据用户的请求，规划并执行一系列工具调用来获取所有必要的原始数据。
 
-为了最高效地完成任务，你必须理解并区分两种可用的记忆辅助工具：
-- **对话缓存 (ConversationCacheSearch)**: 这是你的长期记忆。它存储了过去已经完整回答过且回答良好的问题和答案。
-- **工作暂存区 (retrieve/save_from_scratchpad)**: 这是你的短期草稿纸。它存储了在解决当前问题过程中获取到的原始数据点（如股价、市盈率等）。
-
-你必须严格遵守以下【四步工作流程】：
+你必须严格遵守以下【工作流程】：
 
 **第一步：检查长期记忆（对话缓存）**
    - 永远首先调用 `ConversationCacheSearch` 工具，检查是否已经回答过完全相同或非常相似的问题。
    - 如果找到答案，直接返回该答案，任务结束。
 
-**第二步：规划并执行任务**
-   - 如果缓存未命中，你需要分析用户的问题，规划如何获取数据来构建答案。
-   - 在调用任何外部API工具（例如，`get_stock_price`, `get_financial_reports`等）获取一个具体的数据点之前，必须先调用 `retrieve_from_scratchpad` 工具，检查你的“草稿纸”上是否已经有这个数据。
-   - 如果暂存区没有，才去调用相应的外部API工具获取数据。
+**第二步：规划并执行数据获取**
+   - 如果缓存未命中，你需要分析用户的问题，规划需要获取哪些数据。
+   - 在调用任何外部API工具（例如 `get_stock_price`）之前，必须先调用 `retrieve_from_scratchpad` 工具检查所需数据是否已存在。
 
-**第三步：记录到草稿纸（工作暂存区）**
-   - 每当你通过外部API工具成功获得一个原始数据点（数字、文本等），必须立即调用 `save_to_scratchpad` 工具，将其记录到你的“草稿纸”上。这对于需要多个数据进行计算的复杂问题至关重要。
+   ---
+   **【调用 `retrieve_from_scratchpad` 的黄金法则】**
+   你必须遵循以下三步法来构建最精确的键名(key)：
 
-**第四步：综合并给出最终答案**
-   - 当你收集齐所有需要的数据后，进行最终的计算、分析或整理，并向用户提供清晰、完整的答案。
+   1.  **第一步：识别实体** - 从用户问题中找出核心的金融实体，例如：“特斯拉”、“苹果公司”、“贵州茅台”。
+   2.  **第二步：识别指标** - 从用户问题中找出需要查询的**最具体**的指标或属性，例如：“跌幅”、“市盈率”、“最新报告期的速动比率”、“前一交易日收盘价”。
+   3.  **第三步：精确组合** - 严格按照 **“实体_指标”** 的格式组合键名。
 
----
-**其他重要规则:**
-- **直接回答**: 如果用户的问题不涉及数据查询，而是概念解释（如“什么是市盈率？”）、打招呼或一般性对话，请直接用你的知识回答，不要使用工具。
-- **多步任务**: 如果一个问题需要多个数据点（例如“比较苹果和微软的市盈率”），请严格遵循上述流程，分别为苹果和微软执行“检查暂存区 -> 调用API -> 保存到暂存区”的步骤。
-- **默认时间**: 当用户没有说明查询时间范围时，请默认查找最近的数据。
-- **响应完整性**: 确保你的最终回答响应了用户问题的所有部分。
+   **示例:**
+   - **正例 (必须这样做):**
+     - 用户提问：“特斯拉的跌幅是多少？” -> 你构建的键名必须是 `key='特斯拉_跌幅'`。
+     - 用户提问：“苹果公司的市盈率” -> 你构建的键名必须是 `key='苹果公司_市盈率'`。
+     - 用户提问：“茅台的最新股价” -> 你构建的键名必须是 `key='贵州茅台_最新股价'`。
+     - 用户提问：“特斯拉前一天的收盘价” -> 你构建的键名必须是 `key='特斯拉_前一交易日收盘价'`。
+
+   - **反例 (绝对禁止):**
+     - 用户提问：“特斯拉的跌幅是多少？” -> 禁止使用 `key='特斯拉_股价'`。（错误：过于宽泛，没有精确到“跌幅”）
+     - 用户提问：“苹果公司的市盈率” -> 禁止使用 `key='苹果公司_财务数据'`。（错误：过于笼统，“财务数据”是一个类别，而不是具体指标）
+
+   **核心要求：** 禁止使用任何模糊、笼统或上位的词语（如‘股价’、‘数据’、‘信息’）作为指标，除非用户的问题本身就如此宽泛。你的目标是实现1对1的精确匹配。
+   ---
+
+   - 如果通过精确的键名在暂存区找到了所有需要的数据，就**必须停止**并结束任务，不要再调用外部API。
+   - 如果暂存区没有所需数据，才去调用相应的外部API工具获取。
+
+**第三步：完成任务**
+   - 当你认为已经收集到了回答问题所需的全部原始数据后，停止工具调用。
+   - 你不需要生成最终的、格式优美的答案，只需确保你调用的工具结果已经包含了足够的信息即可。
 """),
-
-        ("placeholder", "{chat_history}"),   # 保留记忆
-        ("human", "{input}"),                # 用户输入
+        ("placeholder", "{chat_history}"),
+        ("human", "{input}"),
         ("placeholder", "{agent_scratchpad}"),
     ]
 )
+# 2. 创建管理者 Prompt
+manager_prompt = ChatPromptTemplate.from_messages([
+    ("system",
+          """你是一位资深的金融分析师和AI数据管家。
+你的任务是接收用户的【原问题】和AI执行者收集到的【中间数据摘要】，然后完成以下四项工作：
+
+1.  **整合答案 (final_answer)**: 根据【中间数据摘要】，首先合成一个直接、准确的答案来回应用户的【原问题】。
+
+2.  **数据暂存 (data_to_scratchpad)**: 这是你的核心职责。你必须将【中间数据摘要】中的每一个工具输出都视为一个等待解析的“数据包”。你的任务是：
+    - **全面解析**：仔细阅读工具输出的完整内容。
+    - **最大化提取**: 从中提取出 **所有** 独立的、具有复用价值的原始数据点。一个工具的输出往往包含多个有用的信息，你必须全部识别出来。
+    - **逐条构建**: 为每一个提取出的数据点，都创建一个独立的 key-value 字典，并遵循“实体_指标”的命名规范。
+    - **汇总列表**: 将所有构建好的字典汇总成一个列表。
+
+3.  **缓存决策 (should_cache)**: 评估你生成的 `final_answer` 的质量。只有当答案有效、信息详实且无误时，才将 `should_cache` 设为 `True`。
+
+4.  **合规性审查**: 确保你的 `final_answer` 中立客观，不包含任何投资建议。如果内容涉及预测或建议，请在末尾追加：\n【免责声明：以上内容仅供参考，不构成任何投资建议。】
+
+**【中间数据摘要】格式示例:**
+步骤 1: 工具调用
+---工具名称: tool_name_A
+---工具输入:{{"parameter_key_1": "parameter_value_1","parameter_key_2": "parameter_value_2"}}
+---工具输出:这是工具A返回的原始结果字符串，可能是JSON、纯文本或其他格式。
+步骤 2: 工具调用
+---工具名称: tool_name_B
+---工具输入:{{"another_key": "another_value"}}
+---工具输出:这是工具B返回的原始结果字符串，可能是JSON、纯文本或其他格式。
+**输出格式:**
+你在综合信息输出时，请你输出完整，比如在输出新闻相关内容时，不仅仅输出标题，还要输出来源、时间、链接等信息，其他信息时同理。
+你必须严格按照以下JSON格式进行输出，不要添加任何其他解释性文字。
+{format_instructions}
+"""),
+    ("human", "【原问题】:\n{query}\n\n【中间数据】:\n{formatted_intermediate_steps}")
+]).partial(format_instructions=synthesizer_parser.get_format_instructions())
+# 3. 组合成完整的管理者/整合者链
+synthesizer_chain = manager_prompt | judge_llm | synthesizer_parser
 
 # prompt = ChatPromptTemplate.from_messages(
 #     [
@@ -731,7 +830,19 @@ while True:
         break
 
     query = history_query_chain.invoke({"init_query": query, "chat_history": memory.buffer})
+    rag_use, query = parse_history_output(query)
     print(f"结合上下文推理后的查询：{query}")
+    if not rag_use:
+        print("无需调用工具，由语言模型直接回答...")
+        direct_llm_response = chat_chain.invoke({
+            "input": query,
+            "chat_history": memory.buffer_as_messages # 传入完整的历史消息
+        })
+        
+        print("\n[直接回答]:", direct_llm_response)
+         # 【新增】手动将闲聊内容存入记忆
+        memory.save_context({"input": query}, {"output": direct_llm_response})
+        continue
     # RAG 和工具检索部分 (这部分仍然是每次查询都执行，因为工具的选择可能依赖于当前查询)
     begin_time_rag_process = time.time()
     splited_query = rag_llm_chain_split.invoke({"init_query": query})
@@ -775,59 +886,77 @@ while True:
     # 筛选出实际检索到的工具实例
     query_tools_instances = [tool for tool in all_tools if tool.name in query_tool_names]
     # 3. 【修改】将RAG检索到的API工具和缓存工具\数据暂存区合并
-    final_tools = [cache_search_tool, save_to_scratchpad, retrieve_from_scratchpad] + query_tools_instances
-    print(f"✨ Agent本轮可用总工具: {[t.name for t in final_tools]}")
+    worker_tools = [cache_search_tool, retrieve_from_scratchpad] + query_tools_instances
+    print(f"✨ 执行者 Agent执行者 Agent本轮可用总工具: {[t.name for t in worker_tools]}")
 
     # 4. 创建并执行 Agent
     # 如果一个工具都没有（既没有API工具，也没有缓存工具），则直接回答
-    if not final_tools:
-        print("无可用工具，正在尝试由语言模型直接回答...")
-        direct_llm_response = model.invoke(query)
-        raw_final_answer = direct_llm_response.content
-        print("\n[直接回答]:", raw_final_answer)
+    if not query_tools_instances:
+        print("未检索到相关API工具，将尝试由语言模型直接回答...")
+        # 这种情况可以简化处理，直接让 '管理者' 基于空数据进行回答
+        intermediate_steps_result = []
     else:
-        agent = create_tool_calling_agent(model, final_tools, prompt)
-        agent_executor = AgentExecutor(
-            agent=agent,
-            tools=final_tools, # 传入本轮所有可用工具
-            verbose=True,
-            memory=memory # 传入记忆对象
+        # 步骤 4: 创建并执行“执行者 Agent”
+        worker_agent = create_tool_calling_agent(model, worker_tools, worker_prompt)
+        worker_executor = AgentExecutor(
+            agent=worker_agent,
+            tools=worker_tools,
+            verbose=False,
+            return_intermediate_steps=True, # 【核心修改】确保返回中间步骤
+            #memory=memory
         )
-        begin_time_llm_response = time.time()
-        response = agent_executor.invoke({"input": query})
-        end_time_llm_response = time.time()
-        print(f"LLM回答时间: {end_time_llm_response - begin_time_llm_response:.2f} 秒")
-        raw_final_answer = response["output"]
-        print("\n[待审查]Agent的最终回答:")
-        print(raw_final_answer)
-
-        # ==================== 新增：回答评估与修正模块 ====================
-        print("\n🔬 正在对回答进行质检和合规性审查...")
-        try:
-            evaluation_result = evaluation_chain.invoke({
-                "query": query,
-                "answer": raw_final_answer
-            })
-
-            # 使用经过修正的最终答案
-            final_answer_to_display = evaluation_result.revised_answer
-
-            print("\n[最终] 修正后的回答:")
-            print(final_answer_to_display)
-
-            # 根据质检结果，有条件地存入缓存
-            if evaluation_result.should_cache:
-                # 注意：我们应该将修正后的、高质量的答案存入缓存
-                cache_manager.add(query, final_answer_to_display)
-                print("\n✅ 评估通过，高质量回答已存入缓存。")
-            else:
-                print(f"\n❌ 评估未通过，原因: {evaluation_result.reasoning}。此回答将不会被缓存。")
         
+        print("\n🚀 开始执行 [执行者 Agent] 以收集数据...")
+        begin_time_llm_response = time.time()
+        response = worker_executor.invoke({"input": query, "chat_history": memory.buffer_as_messages})
+        end_time_llm_response = time.time()
+        print(f"执行者 Agent 运行时间: {end_time_llm_response - begin_time_llm_response:.2f} 秒")
+
+        intermediate_steps_result = response.get("intermediate_steps", [])
+        print("\n[原始数据] 执行者收集到的中间步骤:")
+        print(intermediate_steps_result)
+        formatted_steps = format_intermediate_steps(intermediate_steps_result)
+        print("\n[格式化数据] 整理后准备传给管理者的数据:")
+        print(formatted_steps)
+        # 步骤 5: 执行“管理者/整合者 Chain”
+        print("\n🔬 开始执行 [管理者 Chain] 进行数据整合、存储和质检...")
+        try:
+            # 调用整合链，传入原始问题和中间步骤
+            synthesis_result = synthesizer_chain.invoke({
+                "query": query,
+                "formatted_intermediate_steps": formatted_steps
+            })
+            # 步骤 6: 处理整合结果
+            # 6.1. 将数据存入暂存区
+            if synthesis_result.data_to_scratchpad:
+                print("\n💾 正在将中间结果存入数据暂存区...")
+                for item in synthesis_result.data_to_scratchpad:
+                    if 'key' in item and 'value' in item:
+                        save_to_scratchpad.invoke(item) # 直接调用工具函数
+                    else:
+                        print(f"  - 格式错误，跳过存储: {item}")
+            
+            # 6.2. 将最终答案存入长期缓存（如果需要）
+            if synthesis_result.should_cache:
+                cache_manager.add(query, synthesis_result.final_answer)
+                print("\n✅ 评估通过，高质量回答已存入长期缓存。")
+            else:
+                print(f"\n❌ 评估未通过，原因: {synthesis_result.reasoning}。此回答将不会被缓存。")
+
+            # 6.3. 向用户展示最终答案
+            print("\n[最终答案]:")
+            print(synthesis_result.final_answer)
+            final_answer_to_display = synthesis_result.final_answer
         except Exception as e:
-            print(f"\n⚠️ 回答评估步骤出错: {e}")
-            print("将以降级模式处理：直接展示原始回答，且不进行缓存。")
-            final_answer_to_display = raw_final_answer
-            print("\n[原始] Agent的回答:")
+            print(f"\n⚠️ 管理者 Chain 执行步骤出错: {e}")
+            print("将以降级模式处理：直接展示执行者的原始输出（如果存在）。")
+            final_answer_to_display = response.get("output", "处理过程中发生错误，无法生成最终答案。") if 'response' in locals() else "处理过程中发生错误，无法生成最终答案。"
+            print("\n[原始输出]:")
             print(final_answer_to_display)
-        # ========================== 模块结束 ============================
+
+        # 【新增】无论成功或失败，都在最后手动保存最终的问答对到记忆中
+        if final_answer_to_display:
+            memory.save_context({"input": query}, {"output": final_answer_to_display})
+            print("✅ 本轮有效问答已存入记忆。")
+
 
