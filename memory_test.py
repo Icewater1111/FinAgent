@@ -27,13 +27,6 @@ from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 now = datetime.now()
 
-
-print("--- Python 脚本中读取的环境变量 ---")
-print("HTTP_PROXY:", os.getenv('HTTP_PROXY'))
-print("HTTPS_PROXY:", os.getenv('HTTPS_PROXY'))
-print("http_proxy:", os.getenv('http_proxy'))
-print("https_proxy:", os.getenv('https_proxy'))
-print("-----------------------------------")
 # 加载api_tool_dic
 API_TOOL_dic_path = "./api_dic.json"
 API_TOOL_dic = load_dict_from_json(API_TOOL_dic_path)
@@ -163,15 +156,7 @@ class CacheManager:
         
         return "❌ 缓存中未找到足够相似的答案，请继续使用其他工具。"
 
-# 实例化缓存管理器
-cache_manager = CacheManager(embeddings)
-# ==================== 新增：创建缓存搜索工具 ====================
-cache_search_tool = Tool(
-    name="ConversationCacheSearch",
-    func=cache_manager.search,
-    description="【最高优先级，任务起点】在开始任何新任务前，必须首先调用此工具。它用于检查是否存在一个与用户当前问题高度相似的历史问答，并返回其完整的最终答案。如果此工具返回了一个具体的答案，应直接采纳该答案并结束任务。只有当此工具明确返回'未找到'时，才应继续执行其他步骤来从头解决问题。"
-)
-# ==================== 修改：实现方案三的“数据暂存区” ====================
+# ==================== 修改：实现方案三的"数据暂存区" ====================
 class DataScratchpad:
     """
     一个具有模糊键名匹配功能的键值存储，用作Agent的短期工作记忆。
@@ -183,7 +168,7 @@ class DataScratchpad:
         self.data_types: Dict[str, str] = {}  # 记录数据类型：'realtime' 或 'historical'
         self.embeddings = embeddings_model
         self.key_vectorstore: FAISS | None = None
-        self.key_similarity_threshold = 0.47
+        self.key_similarity_threshold = 0.45
         self.realtime_ttl_minutes = realtime_ttl_minutes  # 实时数据过期时间（分钟）
         self._cleanup_running = True  # 控制清理线程的运行状态
         
@@ -295,30 +280,22 @@ class DataScratchpad:
             age_minutes = age.total_seconds() / 60
             data_type = self.data_types.get(most_similar_key, 'unknown')
             
-            # 【核心修改】将您的逻辑嵌入到强指令格式中返回
-            hit_response = (
-                f"【强制决策指令：暂存区命中】\n"
-                f"你现在必须暂停，并严格执行以下逻辑判断流程：\n"
-                f"--------------------------------------------------\n"
-                f"1. **对比查询键与命中键**：\n"
-                f"   - 你的查询键 (`query_key`): '{key}'\n"
-                f"   - 系统命中键 (`matched_key`): '{most_similar_key}'\n"
-                f"   - 命中值 (`value`): {json.dumps(retrieved_value, ensure_ascii=False)}\n\n"
-                f"2. **执行判断与行动**：\n"
-                f"   - **如果** 这两个键逻辑上【等价或可转换】(例如，查询'CNY_USD_汇率'命中'USD_CNY_汇率')，你【必须】采纳此 'value'，并【绝对禁止】为'{key}'这个数据点调用任何其他外部工具。本次数据点采集任务完成，继续处理下一个数据点。\n"
-                f"   - **如果** 这两个键逻辑上【完全无关】(例如，查询'TSLA_股价'命中'TSLA_每股收益')，你【必须忽略】此结果，并将此情况视为【未命中】，立即去调用合适的外部工具来获取'{key}'。\n"
-                f"--------------------------------------------------"
-            )
-            print(f"✅ 暂存区模糊检索成功: 返回强制决策指令。")
-            return hit_response
+            # 【核心修改】返回一个包含完整上下文的JSON字符串
+            result_payload = {
+                "status": "hit",
+                "query_key": key,
+                "matched_key": most_similar_key,
+                "value": retrieved_value,
+                "score": float(f"{score:.3f}"),
+                "data_type": data_type,
+                "age_minutes": float(f"{age_minutes:.1f}")
+            }
+            print(f"✅ 暂存区模糊检索成功: 命中详情 -> {json.dumps(result_payload, ensure_ascii=False)}")
+            # ensure_ascii=False 保证中文字符正常显示
+            return json.dumps(result_payload, ensure_ascii=False)
 
-        # 当未命中时
-        miss_response = (
-            f"【指令：暂存区未命中】\n"
-            f"--- 查询键: {key}\n"
-            f"--- 决策指令: 暂存区中未找到'{key}'。你【必须】立即调用一个合适的外部API工具来获取该数据。"
-        )
-        return miss_response
+        print(f"❌ 暂存区模糊检索失败: 传入key='{key}'，归一化key='{norm_key}'，未找到相似的已存键名。")
+        return "未在暂存区中找到与该键名相关的数据。"
 
 
     def _remove_data(self, key: str):
@@ -408,16 +385,16 @@ def save_to_scratchpad(key: str, value: Any) -> str:
 @tool(args_schema=RetrieveArgs)
 def retrieve_from_scratchpad(key: str) -> Any:
     """
-    在使用别的tool获取数据点之前，【必须】先用此工具从暂存区检索数据。
+    【API调用前必须执行】在调用任何外部API之前，必须先用此工具从暂存区检索数据。
     
-    【重要】此工具的返回值是一个包含【强制决策指令】的JSON对象。你【必须】严格遵循 `action_directive` 字段中的逻辑来决定下一步行动。
+    【重要】此工具的返回格式如下：
+    1.  **命中时**: 返回一个包含详细上下文的 JSON 字符串，格式为：
+        `{"status": "hit", "query_key": "你的查询键", "matched_key": "实际命中的键", "value": "数据值", ...}`
+    2.  **未命中时**: 返回一个提示字符串，如 "未在暂存区中找到..."。
 
-    1.  **命中时 (`status: "hit"`)**: `action_directive` 会提供一个完整的决策流程，要求你对比 `query_key` 和 `matched_key`：
-        -   如果逻辑上等价或可转换，指令会要求你【采纳数据并停止】。
-        -   如果逻辑上完全无关，指令会要求你【忽略数据并继续】调用外部工具。
-        你必须严格按照这个流程进行判断和行动。
-
-    2.  **未命中时 (`status: "miss"`)**: `action_directive` 会直接命令你继续调用外部工具。
+    【你的责任】收到命中结果后，你【必须】检查返回的 `matched_key` 是否与你的 `query_key` 在逻辑上完全等价。
+    - **例如**: 你查 `CNY_USA_汇率`，但 `matched_key` 是 `USA_CNY_汇率`。这在语义上相似但逻辑上是倒数关系。你必须识别出这一点，并决定此 `value` 是否可用（可能需要后续计算）。如果不可用，则必须放弃此结果，继续调用外部API。
+    - **只有当 `matched_key` 确认无误后**，你才能使用这个 `value` 并终止后续的API调用。
     """
     return scratchpad._retrieve_data(key)
 
@@ -633,70 +610,6 @@ rag_prompt = ChatPromptTemplate.from_messages([
     ("placeholder", "{chat_history}"),
     ("human", "{init_query}")
 ])
-# RAG 扩展查询 Prompt
-'''
-rag_prompt = PromptTemplate(
-    template = 
-    """你是一个API查询助手，精通金融数据API文档的结构和内容。
-        你的任务是根据用户的自然语言查询，根据需要将其扩展成一个更详细、更精确、包含更多API文档中常见词汇（如功能描述、支持市场、数据类型、数据粒度、数据特点、应用场景、限制与注意事项、以及API的关键词）的查询文本。这个扩展后的查询旨在帮助向量数据库更好地匹配到最相关的API文档。
-        只返回扩展后的查询文本，不要添加任何解释或额外文字。如果原始查询信息足够丰富则不必过多扩展。
-
-        ---
-        示例开始 ---
-
-        用户查询: 我要问腾讯的最近的股价
-
-        扩展查询: 查询腾讯控股（00700）在香港股票市场的实时行情数据，包括最新价、涨跌幅、成交量、成交额等。需要获取港股盘中数据。
-
-        ---
-        用户查询: 我要问查询比亚迪公司的最新动态和中文新闻资讯，包括新闻标题、来源、发布日期和链接等，用于公司舆情监控和投资决策。
-
-        扩展查询: 查询比亚迪公司的最新动态和中文新闻资讯，包括新闻标题、来源、发布日期和链接等，用于公司舆情监控和投资决策，可以使用NewsAPI或者东方财富网提供的新闻资讯以及NEWS_SENTIMENT。
-
-        ---
-
-        用户查询: 我想看看阿里巴巴过去一年的股价走势
-
-        扩展查询: 查询阿里巴巴（09988）在香港股票市场过去一年的历史行情数据，包括开盘价、收盘价、最高价、最低价、成交量、成交额等K线数据。可能需要进行复权处理，用于技术分析和量化回测。
-
-        ---
-
-        用户查询: 告诉我小米的基本情况
-
-        扩展查询: 查询小米集团的详细公司资料和基本信息，包括公司名称、注册地、所属行业、董事长、公司介绍等上市公司基本资料，用于公司基本面研究和尽职调查。
-
-        ---
-
-        用户查询: 想了解苹果的财务状况
-
-        扩展查询: 查询苹果公司（AAPL）作为美国公司的综合信息，包括公司基本资料、财务比率、估值指标和关键业务指标等财务状况，通常在财报发布当天更新，用于基本面分析和投资决策。
-
-        ---
-        用户查询: 腾讯有什么新闻？
-
-        扩展查询: 查询腾讯控股的中文新闻资讯，包括新闻标题、来源、发布日期和链接等，用于公司舆情监控，可以使用NewsAPI或者东方财富网提供的新闻资讯以及NEWS_SENTIMENT。
-
-        ---
-        用户查询: 我想了解华为在国际上的报道。
-
-        扩展查询: 查询华为公司在国际媒体上的英文新闻资讯，包括新闻标题、来源、发布日期和链接等，用于国际舆情分析，可以使用NewsAPI或者东方财富网提供的新闻资讯以及NEWS_SENTIMENT。
-
-        ---
-        用户查询: 告诉我关于特斯拉的英文新闻。
-
-        扩展查询: 查询特斯拉公司（TSLA）在国际媒体上的英文新闻资讯，包括新闻标题、来源、发布日期和链接等，用于国际公司舆情监控和投资决策，可以使用NewsAPI或者东方财富网提供的新闻资讯以及NEWS_SENTIMENT。
-
-        ---
-        示例结束 ---
-
-        用户查询: {init_query}
-
-        扩展查询:
-    """
-)
-'''
-# 初始化LLM
-# model = init_chat_model("deepseek-chat", model_provider="deepseek", seed=2025)
 
 model = FixedChatTongyi(
     model="qwen-max",  # 或 qwen-max / qwen-turbo 等
@@ -933,77 +846,58 @@ key_rag_llm_chain = key_rag_prompt.partial(current_time=str(datetime.now())) | m
 rag_llm_chain = rag_prompt.partial(current_time=str(datetime.now())) | model | StrOutputParser()
 chat_chain = chat_prompt | model | StrOutputParser()
 
-# 1. 实例化记忆模块
-# memory_key 必须与 ChatPromptTemplate 中用于历史对话的 placeholder 名称一致
-# k=5 表示记住最近的5轮对话（用户输入+AI输出算一轮）
-# return_messages=True 表示返回消息对象列表，这与ChatPromptTemplate的期望一致
 memory = ConversationBufferWindowMemory(
     memory_key="chat_history",
     k=5,
     return_messages=True
 )
 
-# 2. 修改Agent的Prompt，添加 {chat_history} 占位符
-# 这个占位符将由 AgentExecutor 自动填充，包含记忆中的历史对话
 worker_prompt = ChatPromptTemplate.from_messages(
     [
-        ("system", f"""当前时间为 {now}。。你是一个严谨、高效且绝对服从指令的金融数据采集员，严格遵循程序指令。你的唯一任务是根据用户问题，采集一系列“原始数据点”。你绝不能直接回答用户，也绝不能进行任何计算或推理。
+        ("system", f"""当前时间为{now},你是一个严谨的金融数据采集员。你的唯一任务是根据用户问题，规划并获取所有必需的“原始数据点”。你绝对不能进行任何计算、推理或直接回答用户。
 
-你的行动【必须】遵循以下两个核心部分：【决策树流程】和【思考格式】。
-
-============================================================
-【第一部分：决策树流程】
-这是你行动的唯一蓝图。对于规划出的每一个“数据点”，你都必须从头开始此流程。
-
----
-**【步骤 1：规划】**
-*   **任务**: 分析用户问题，仅在你的内心思考中拆解出所有需要查询的“数据点”列表。
-    例如：查询“苹果公司的市盈率”，你的规划列表应该是：
-    1. `AAPL_市盈る` (首选目标)
-    2. `AAPL_股价` (备用原料)
-    3. `AAPL_每股收益` (备用原料)
-*   **完成后**: 进入【步骤 2】。
-
----
-**【步骤 2：执行循环】**
-对列表中的【每一个】数据点，严格按顺序执行以下决策点：
-
-    **【决策点 2.1: 长期缓存】**
-    *   **行动**: 调用 `ConversationCacheSearch` 工具。
-    *   **审视结果**:
-        *   如果返回了最终答案 -> 你的整个任务【立即结束】。将此答案作为最终结果输出。
-        *   如果返回 "未找到" -> 进入【决策点 2.2】。
-
-    **【决策点 2.2: 数据暂存区】**
-    *   **行动**: 调用 `retrieve_from_scratchpad` 工具。
-    *   **审视结果 (最高优先级)**:
-        *   **你必须暂停常规思考，进入【指令解析模式】**。
-        *   这个工具的返回不是数据，而是一条【系统指令】。你唯一的任务就是在下一步的思考中，对这条指令进行分析并严格遵循。
-        *   **根据指令内容决策**:
-            *   如果指令要求你【采纳数据】(因为逻辑等价) -> 此数据点的采集工作结束。为下一个数据点（如有）重新从【决策点 2.1】开始。
-            *   如果指令要求你【忽略并继续】(因为逻辑无关) -> 进入【决策点 2.3】。
-            *   如果指令是【未命中】 -> 进入【决策点 2.3】。
-
-    **【决策点 2.3: 外部 API】**
-    *   **行动**: 调用合适的外部API工具来获取数据。
-    *   **审视结果**:
-        *   成功获取数据后，此数据点的采集工作结束。为下一个数据点（如有）重新从【决策点 2.1】开始。
-
----
-**【步骤 3：完成】**
-*   **条件**: 当你的“数据点”列表为空时。
-*   **行动**: 立即停止，将所有采集到的中间步骤信息返回。
+你必须严格遵循以下【行动算法】：
 
 ============================================================
-【第二部分：思考格式】
-这是你向系统展示你工作状态的唯一方式。你的每一次思考（Thought）都【必须】遵循此格式。
-数据点清单: [展示当前所有待处理的数据点列表]
-当前处理: [正在处理的单个数据点]
-当前决策点: [你正处于哪个决策点，例如 '2.2: 数据暂存区']
-上一步观察(Observation)分析: [这里是你最关键的部分。详细分析上一步工具的输出。如果来自retrieve_from_scratchpad，必须逐字分析指令内容，并明确得出下一步应该进入哪个决策点的结论。]
-决策: [基于你的分析，明确声明下一步的具体行动。例如：'采纳数据，处理下一个数据点' 或 '忽略结果，前往决策点2.3' 或 '调用工具XXX'。]
+【第一步：规划】
+分析用户问题，拆解出所有需要查询的“数据点”。
+例如：查询“苹果公司的市盈率”，你需要规划采集：
+1. `AAPL_市盈率` (首选目标)
+2. `AAPL_股价` (备用原料)
+3. `AAPL_每股收益` (备用原料)
+
+============================================================
+【第二步：执行 - 对每个数据点循环执行】
+对于规划中的【每一个】数据点，你【必须】严格遵循“先查缓存 -> 再查暂存 -> 最后调API”的顺序。
+
+--- 阶段 A: 查长期缓存 (最高优先级) ---
+1.  调用 `ConversationCacheSearch` 工具。
+2.  如果命中，获取到完整答案 -> 你的任务【立即结束】，**必须**停止所有后续操作，直接返回已知信息。
+
+--- 阶段 B: 查暂存区 (数据复用) ---
+1.  使用【标准键名】调用 `retrieve_from_scratchpad` 工具。
+    *   【标准键名规则】: 实体必须是官方代码（如 `AAPL`, `600519`），属性是中文标准名（如 `股价`, `营收`）。
+2.  **【强制验证返回结果】**:
+    *   **未命中 (返回字符串)**: 直接进入【阶段 C】。
+    *   **命中 (返回 JSON 对象)**: 你必须对比你查询的 `query_key` 和它返回的 `matched_key`，然后决策：
+        *   **情况1：逻辑等价** (如查 `AAPL_股价` 命中 `Apple_股价`)
+            -> **决策**: 数据有效，直接使用。此数据点采集完成,【绝对禁止】再为此数据点调用任何其他工具。
+        *   **情况2：逻辑相关但需转换** (如查 `CNY_USD_汇率` 命中 `USD_CNY_汇率`)
+            -> **决策**: 数据有效，但需在思考中记录“需进行倒数计算”。此数据点采集完成，【绝对禁止】再为此数据点调用任何其他工具。
+        *   **情况3：逻辑无关 (错误匹配)** (如查 `TSLA_股价` 命中 `TSLA_每股收益`)
+            -> **决策**: 数据【无效】，必须忽略。将此情况视为【未命中】，立即进入【阶段 C】。
+
+--- 阶段 C: 调用外部 _tool (最后手段) ---
+仅在以下情况可调用别的可用的tool：
+1.  【阶段 B】中暂存区未命中。
+2.  【阶段 B】中暂存区命中但验证为【无效】。
+
+============================================================
+【第三步：完成】
+当你规划的所有数据点都已通过上述流程成功采集后，你的任务就完成了。立即停止，并将所有采集到的中间步骤信息返回。
+
 """),
-        #("placeholder", "{chat_history}"),
+        ("placeholder", "{chat_history}"),
         ("human", "{input}"),
         ("placeholder", "{agent_scratchpad}"),
     ]
@@ -1034,7 +928,7 @@ manager_prompt = ChatPromptTemplate.from_messages([
 
 ============================================================
 【第二部分：数据治理与暂存 (`data_to_scratchpad`)】
-这是你的核心职责。你必须将本次收到的、有价值的、与问题相关的【原始数据】整理后存入暂存区。你必须遵循【数据暂存黄金法则】：
+这是你的核心职责。你必须将本次收到的、有价值的【原始数据】整理后存入暂存区。你必须遵循【数据暂存黄金法则】：
 *   **法则一：【强制命名标准化】**: 所有存入的 `key` 都必须遵循【实体_属性】格式，实体必须是官方股票代码 (如 `AAPL`, `600519`)。
 *   **法则二：【只存原始数据，不存计算结果】**: 绝对禁止保存你自己计算出的复合指标。
 *   **法则三：【数据原子化】**: 如遇复杂对象，必须拆分为多条独立的 key-value 对。
@@ -1076,91 +970,145 @@ async def retrieve(single_last_query, mode, topk):
         docs = await faiss_databases[query_index].asimilarity_search(single_last_query, k=topk)
     return query_index, docs
 
-# 循环开始，允许用户进行多轮对话
-print("欢迎使用金融API调用助手！输入 '退出' 结束对话。")
-while True:
-    query = input("\n请输入想要询问的问题：")
-    if query.lower() == '退出':
-        print("对话结束。")
-        break
-    query = history_query_chain.invoke({"init_query": query, "chat_history": memory.buffer})
-    rag_use, query = parse_history_output(query)
-    print(f"结合上下文推理后的查询：{query}")
+def create_memory_instance():
+    """创建独立的记忆实例"""
+    return ConversationBufferWindowMemory(
+        memory_key="chat_history",
+        k=5,
+        return_messages=True
+    )
 
+def create_cache_manager():
+    """创建独立的缓存管理器实例"""
+    return CacheManager(embeddings)
+
+def create_scratchpad():
+    """创建独立的数据暂存区实例"""
+    return DataScratchpad(embeddings)
+
+def create_sample_tools(cache_manager, scratchpad):
+    """为每个样例创建独立的工具集"""
+    cache_search_tool = Tool(
+        name="ConversationCacheSearch",
+        func=cache_manager.search,
+        description="【最高优先级，任务起点】在开始任何新任务前，必须首先调用此工具。它用于检查是否存在一个与用户当前问题高度相似的历史问答，并返回其完整的最终答案。如果此工具返回了一个具体的答案，应直接采纳该答案并结束任务。只有当此工具明确返回'未找到'时，才应继续执行其他步骤来从头解决问题。"
+    )
+    
+    # 创建暂存区工具的闭包，绑定到特定的scratchpad实例
+    @tool(args_schema=SaveArgs)
+    def save_to_scratchpad(key: str, value: Any) -> str:
+        """【暂存中间结果】当你通过外部API工具成功获取到一个可复用的原始数据点（例如一个具体的股价、财报数字、指标）后，应立即使用此工具将其存入数据暂存区，以便在当前任务的后续步骤中直接使用。键名(key)应严格遵循'实体_属性'格式，例如 key='特斯拉_股价', value=200。"""
+        scratchpad._save_data(key, value)
+        print(f"暂存区保存: key='{key}', value={value}")
+        return f"数据点 '{key}' 已成功保存到暂存区。"
+    
+    @tool
+    def clear_expired_scratchpad_data() -> str:
+        """【手动清理】立即清理暂存区中所有过期的实时数据。当需要确保获取最新数据时，可以使用此工具手动清理过期数据。"""
+        return scratchpad.manual_cleanup()
+    
+    @tool(args_schema=RetrieveArgs)
+    def retrieve_from_scratchpad(key: str) -> Any:
+        """【API调用前检查】在调用任何外部API（如查询股价、财报的工具）来获取原始数据之前，必须先使用此工具，通过一个描述性的键名（key）来检查工作暂存区中是否已存在所需的数据点。这可以避免不必要的API调用。例如，在需要特斯拉股价时，先用 key='特斯拉_股价' 在此检索。"""
+        return scratchpad._retrieve_data(key)
+    
+    return cache_search_tool, retrieve_from_scratchpad, save_to_scratchpad, clear_expired_scratchpad_data
+
+async def process_single_query(query: str, memory: ConversationBufferWindowMemory, sample_num: int, round_num: int, cache_manager, scratchpad, cache_search_tool, retrieve_from_scratchpad, save_to_scratchpad, clear_expired_scratchpad_data):
+    """处理单个查询的完整流程"""
+    print(f"\n{'='*50}")
+    print(f"样例 {sample_num} - 第{round_num}轮查询: {query}")
+    print(f"{'='*50}")
+    
+    # 记录到输出文件
+    with open(memory_test_output_path, 'a', encoding='utf-8') as out_f:
+        out_f.write(f"\n{'='*50}\n")
+        out_f.write(f"样例 {sample_num} - 第{round_num}轮查询: {query}\n")
+        out_f.write(f"{'='*50}\n")
+    
+    # 查询历史处理
+    processed_query = history_query_chain.invoke({"init_query": query, "chat_history": memory.buffer})
+    rag_use, query = parse_history_output(processed_query)
+    print(f"结合上下文推理后的查询：{query}")
+    
+    with open(memory_test_output_path, 'a', encoding='utf-8') as out_f:
+        out_f.write(f"结合上下文推理后的查询：{query}\n")
+    
     if not rag_use:
         print("无需调用工具，由语言模型直接回答...")
         direct_llm_response = chat_chain.invoke({
             "input": query,
-            "chat_history": memory.buffer_as_messages # 传入完整的历史消息
+            "chat_history": memory.buffer_as_messages
         })
         
         print("\n[直接回答]:", direct_llm_response)
-         # 【新增】手动将闲聊内容存入记忆
         memory.save_context({"input": query}, {"output": direct_llm_response})
-        continue
-    # RAG 和工具检索部分 (这部分仍然是每次查询都执行，因为工具的选择可能依赖于当前查询)
+        
+        with open(memory_test_output_path, 'a', encoding='utf-8') as out_f:
+            out_f.write(f"[直接回答]: {direct_llm_response}\n")
+        return
+    
+    # RAG 和工具检索部分
     begin_time_rag_process = time.time()
     splited_query = rag_llm_chain_split.invoke({"init_query": query})
     splited_query_list = split_numbered_items(splited_query)
     mode = 1
     topk = 3
-    async def main():
-        # 1️⃣ 并发扩展查询
-        last_query_list = await asyncio.gather(*[
-            expand_query(q, memory) for q in splited_query_list
-        ])
-        print(f"📝 扩展查询结果: {last_query_list}")
+    
+    # 1️⃣ 并发扩展查询
+    last_query_list = await asyncio.gather(*[
+        expand_query(q, memory) for q in splited_query_list
+    ])
+    print(f"📝 扩展查询结果: {last_query_list}")
 
-        # 2️⃣ 并发检索
-        retrieval_results = await asyncio.gather(*[
-            retrieve(q, mode, topk) for q in last_query_list
-        ])
+    # 2️⃣ 并发检索
+    retrieval_results = await asyncio.gather(*[
+        retrieve(q, mode, topk) for q in last_query_list
+    ])
 
-        results, query_tool_names = [], []
-        for query_index, docs in retrieval_results:
-            if not query_index:
-                continue
-            print(f"🔍 提取市场分类: {query_index}")
-            print(f"📖 使用数据库 [{query_index}] 检索 top{topk} 条")
+    results, query_tool_names = [], []
+    for query_index, docs in retrieval_results:
+        if not query_index:
+            continue
+        print(f"🔍 提取市场分类: {query_index}")
+        print(f"📖 使用数据库 [{query_index}] 检索 top{topk} 条")
 
-            results.append(docs)
-            for doc in docs:
-                tool_meta_name = doc.metadata.get("name")
-                if tool_meta_name and tool_meta_name in API_TOOL_dic:
-                    query_tool_names.append(API_TOOL_dic[tool_meta_name])
+        results.append(docs)
+        for doc in docs:
+            tool_meta_name = doc.metadata.get("name")
+            if tool_meta_name and tool_meta_name in API_TOOL_dic:
+                query_tool_names.append(API_TOOL_dic[tool_meta_name])
 
-        query_tool_names = list(set(query_tool_names))
-        print(f"🛠️ 检索到的工具: {query_tool_names if query_tool_names else '无'}")
-        return results, query_tool_names, last_query_list
-
-
-    results, query_tool_names, last_query_list = asyncio.run(main())
+    query_tool_names = list(set(query_tool_names))
+    print(f"🛠️ 检索到的工具: {query_tool_names if query_tool_names else '无'}")
+    results, query_tool_names, last_query_list = results, query_tool_names, last_query_list
     end_time_rag_process = time.time()
     print(f"扩展和RAG检索执行时间: {end_time_rag_process - begin_time_rag_process} 秒")
     
-    # 保存扩展查询结果，供后续使用（用于提取数据粒度）
+    # 保存扩展查询结果，供后续使用
     expanded_queries = last_query_list
     
     # 筛选出实际检索到的工具实例
     query_tools_instances = [tool for tool in all_tools if tool.name in query_tool_names]
-    # 3. 【修改】将RAG检索到的API工具和缓存工具\数据暂存区合并
     worker_tools = [cache_search_tool, retrieve_from_scratchpad] + query_tools_instances
-    print(f"✨ 执行者 Agent执行者 Agent本轮可用总工具: {[t.name for t in worker_tools]}")
-    # 4. 创建并执行 Agent
-    # 如果一个工具都没有（既没有API工具，也没有缓存工具），则直接回答
+    print(f"✨ 执行者 Agent本轮可用总工具: {[t.name for t in worker_tools]}")
+    
+    with open(memory_test_output_path, 'a', encoding='utf-8') as out_f:
+        out_f.write(f"检索到的工具: {[t.name for t in worker_tools]}\n")
+
+    # 创建并执行 Agent
     if not query_tools_instances:
         print("未检索到相关API工具，将尝试由语言模型直接回答...")
-        # 这种情况可以简化处理，直接让 '管理者' 基于空数据进行回答
         intermediate_steps_result = []
+        final_answer_to_display = "未找到相关工具来回答此问题。"
     else:
-        # 步骤 4: 创建并执行“执行者 Agent”
+        # 创建执行者 Agent
         worker_agent = create_tool_calling_agent(model, worker_tools, worker_prompt)
         worker_executor = AgentExecutor(
             agent=worker_agent,
             tools=worker_tools,
             verbose=False,
-            return_intermediate_steps=True, # 【核心修改】确保返回中间步骤
-            #memory=memory
+            return_intermediate_steps=True,
         )
         
         print("\n🚀 开始执行 [执行者 Agent] 以收集数据...")
@@ -1170,33 +1118,34 @@ while True:
         print(f"执行者 Agent 运行时间: {end_time_llm_response - begin_time_llm_response:.2f} 秒")
 
         intermediate_steps_result = response.get("intermediate_steps", [])
-        #print("\n[原始数据] 执行者收集到的中间步骤:")
-        #print(intermediate_steps_result)
         formatted_steps = format_intermediate_steps(intermediate_steps_result)
+        
+        # 记录worker_agent的思考过程
+        with open(memory_test_output_path, 'a', encoding='utf-8') as out_f:
+            out_f.write(f"\n[Worker Agent 思考过程]:\n{formatted_steps}\n")
+        
         print("\n[格式化数据] 整理后准备传给管理者的数据:")
         print(formatted_steps)
-        # 步骤 5: 执行“管理者/整合者 Chain”
+        
+        # 执行管理者/整合者 Chain
         print("\n🔬 开始执行 [管理者 Chain] 进行数据整合、存储和质检...")
         try:
-            # 调用整合链，传入原始问题和中间步骤
             synthesis_result = synthesizer_chain.invoke({
                 "query": query,
                 "formatted_intermediate_steps": formatted_steps
             })
-            # 步骤 6: 处理整合结果
-            # 6.1. 将数据存入暂存区
+            
+            # 处理整合结果
             if synthesis_result.data_to_scratchpad:
                 print("\n💾 正在将中间结果存入数据暂存区...")
-                # 首先从扩展查询结果中提取数据粒度（用于判断是否为实时API）
                 expanded_granularity = None
-                if 'expanded_queries' in locals():
+                if expanded_queries:
                     for expanded_query in expanded_queries:
                         extracted_granularity = extract_granularity_from_expanded_query(expanded_query)
                         if extracted_granularity:
                             expanded_granularity = extracted_granularity
                             break
                 
-                # 判断扩展查询是否为实时API
                 is_realtime_api = False
                 if expanded_granularity:
                     expanded_granularity_lower = expanded_granularity.lower().strip()
@@ -1204,45 +1153,130 @@ while True:
                 
                 for item in synthesis_result.data_to_scratchpad:
                     if 'key' in item and 'value' in item:
-                        # 获取数据粒度信息（如果提供）
                         granularity = item.get('granularity', '')
-                        
-                        # 【核心规则】如果扩展查询是实时API，所有数据点都强制标记为"实时"
                         if is_realtime_api:
                             granularity = '实时'
                             print(f"  🔄 检测到实时API，强制标记为实时: {item['key']}")
-                        # 如果没有在item中提供粒度，尝试从扩展查询结果中提取
                         elif not granularity and expanded_granularity:
                             granularity = expanded_granularity
                         
-                        # 直接调用底层方法保存数据，传入数据粒度
                         scratchpad._save_data(item['key'], item['value'], granularity=granularity)
                         data_type = scratchpad.data_types.get(item['key'], 'unknown')
                         print(f"  ✅ 已保存: key='{item['key']}', type={data_type}, granularity={granularity if granularity else '未指定'}")
-                    else:
-                        print(f"  - 格式错误，跳过存储: {item}")
             
-            # 6.2. 将最终答案存入长期缓存（如果需要）
+            # 将最终答案存入长期缓存（如果需要）
             if synthesis_result.should_cache:
                 cache_manager.add(query, synthesis_result.final_answer)
                 print("\n✅ 评估通过，高质量回答已存入长期缓存。")
             else:
                 print(f"\n❌ 评估未通过，原因: {synthesis_result.reasoning}。此回答将不会被缓存。")
 
-            # 6.3. 向用户展示最终答案
+            # 展示最终答案
             print("\n[最终答案]:")
             print(synthesis_result.final_answer)
             final_answer_to_display = synthesis_result.final_answer
+            
+            # 记录最终答案
+            with open(memory_test_output_path, 'a', encoding='utf-8') as out_f:
+                out_f.write(f"\n[最终答案]:\n{synthesis_result.final_answer}\n")
+                
         except Exception as e:
             print(f"\n⚠️ 管理者 Chain 执行步骤出错: {e}")
-            print("将以降级模式处理：直接展示执行者的原始输出（如果存在）。")
-            final_answer_to_display = response.get("output", "处理过程中发生错误，无法生成最终答案。") if 'response' in locals() else "处理过程中发生错误，无法生成最终答案。"
-            print("\n[原始输出]:")
-            print(final_answer_to_display)
+            final_answer_to_display = response.get("output", "处理过程中发生错误，无法生成最终答案。")
+            
+            with open(memory_test_output_path, 'a', encoding='utf-8') as out_f:
+                out_f.write(f"\n[执行出错]: {e}\n")
 
-        # 【新增】无论成功或失败，都在最后手动保存最终的问答对到记忆中
-        if final_answer_to_display:
-            memory.save_context({"input": query}, {"output": final_answer_to_display})
-            print("✅ 本轮有效问答已存入记忆。")
+    # 保存问答对到记忆中
+    if final_answer_to_display:
+        memory.save_context({"input": query}, {"output": final_answer_to_display})
+        print("✅ 本轮有效问答已存入记忆。")
 
+#输入路径：
+memory_test_file_path = "./test/memory_test.txt"
+memory_test_output_path = "./test/memory_test_output.txt"
 
+async def main():
+    """主异步函数"""
+    # 清空输出文件
+    with open(memory_test_output_path, 'w', encoding='utf-8') as f:
+        f.write("Memory Test Results\n")
+        f.write(f"开始时间: {datetime.now()}\n")
+    with open(memory_test_file_path, 'r', encoding='utf-8') as f:
+        print(f"--- 开始读取文件: {memory_test_file_path} 并执行memory测试 ---")
+        #每次循环都先空读一行，也就是每三行作为一个测试单元，第一行为空，第二行是用户第一轮输入，第三行是用户第二轮输入
+        #每个样例应该是单独的memory和agent执行环境
+        lines = f.readlines()
+        
+        total_samples = len(lines) // 3
+        print(f"总共发现 {total_samples} 个样例")
+        
+        for i in range(0, len(lines), 3):
+            if i + 2 >= len(lines):
+                break
+                
+            sample_num = i // 3 + 1
+            
+            # 获取三行内容：空行、第一轮输入、第二轮输入
+            empty_line = lines[i].strip()
+            first_query = lines[i + 1].strip()
+            second_query = lines[i + 2].strip()
+            
+            print(f"\n{'='*60}")
+            print(f"开始处理样例 {sample_num}/{total_samples}")
+            print(f"第一轮问题: {first_query}")
+            print(f"第二轮问题: {second_query}")
+            print(f"{'='*60}")
+            
+            # 为每个样例创建独立的记忆实例、缓存管理器和暂存区
+            sample_memory = create_memory_instance()
+            sample_cache_manager = create_cache_manager()
+            sample_scratchpad = create_scratchpad()
+            cache_search_tool, retrieve_from_scratchpad, save_to_scratchpad, clear_expired_scratchpad_data = create_sample_tools(sample_cache_manager, sample_scratchpad)
+            
+            print(f"🔧 样例 {sample_num} 已创建独立的执行环境:")
+            print(f"  - 记忆实例: ConversationBufferWindowMemory")
+            print(f"  - 缓存管理器: CacheManager")
+            print(f"  - 数据暂存区: DataScratchpad")
+            print(f"  - 工具集: {[cache_search_tool.name, retrieve_from_scratchpad.name, save_to_scratchpad.name, clear_expired_scratchpad_data.name]}")
+            
+            try:
+                # 处理第一轮查询
+                await process_single_query(first_query, sample_memory, sample_num, 1, sample_cache_manager, sample_scratchpad, cache_search_tool, retrieve_from_scratchpad, save_to_scratchpad, clear_expired_scratchpad_data)
+                
+                # 等待一下，避免API调用过快
+                await asyncio.sleep(2)
+                
+                # 处理第二轮查询
+                await process_single_query(second_query, sample_memory, sample_num, 2, sample_cache_manager, sample_scratchpad, cache_search_tool, retrieve_from_scratchpad, save_to_scratchpad, clear_expired_scratchpad_data)
+                
+                # 等待一下，避免API调用过快
+                await asyncio.sleep(2)
+                
+                # 显示样例完成后的统计信息
+                cache_stats = sample_cache_manager.df.shape[0] if hasattr(sample_cache_manager.df, 'shape') else 0
+                scratchpad_stats = sample_scratchpad.get_stats()
+                print(f"\n📊 样例 {sample_num} 最终统计:")
+                print(f"  - 缓存问答对: {cache_stats}")
+                print(f"  - 暂存区数据: {scratchpad_stats['total']} 条 (实时: {scratchpad_stats['realtime']}, 历史: {scratchpad_stats['historical']})")
+                
+                print(f"\n✅ 样例 {sample_num} 处理完成")
+                
+                with open(memory_test_output_path, 'a', encoding='utf-8') as out_f:
+                    out_f.write(f"\n📊 样例 {sample_num} 最终统计:\n")
+                    out_f.write(f"  - 缓存问答对: {cache_stats}\n")
+                    out_f.write(f"  - 暂存区数据: {scratchpad_stats['total']} 条 (实时: {scratchpad_stats['realtime']}, 历史: {scratchpad_stats['historical']})\n")
+                    out_f.write(f"\n✅ 样例 {sample_num} 处理完成\n")
+                    out_f.write(f"{'='*60}\n")
+                    
+            except Exception as e:
+                print(f"❌ 样例 {sample_num} 处理出错: {e}")
+                with open(memory_test_output_path, 'a', encoding='utf-8') as out_f:
+                    out_f.write(f"\n❌ 样例 {sample_num} 处理出错: {e}\n")
+                    out_f.write(f"{'='*60}\n")
+                continue
+
+    print(f"\n🎉 所有测试完成！结果已保存到: {memory_test_output_path}")
+
+if __name__ == "__main__":
+    asyncio.run(main())

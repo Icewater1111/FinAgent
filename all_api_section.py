@@ -3130,7 +3130,7 @@ HK_API_SPECS = [
         ]
     },
     {
-        "name": "AKSHARE_MACRO_CHINA_HK_GBP",
+        "name": "AKSHARE_MACRO_CHINA_HK_GDP",
         "description": {
            "功能描述": "获取中国香港地区的本地生产总值（GDP）历史数据。此接口提供每季度GDP的前值、现值以及发布日期。",
            "数据类型": "GDP，宏观经济指标",
@@ -3147,7 +3147,7 @@ HK_API_SPECS = [
         ]
     },
     {
-        "name": "AKSHARE_MACRO_CHINA_HK_GBP_RATIO",
+        "name": "AKSHARE_MACRO_CHINA_HK_GDP_RATIO",
         "description": {
            "功能描述": "获取中国香港地区的本地生产总值（GDP）同比增速历史数据。此接口提供每季度GDP同比增速的前值、现值以及发布日期。",
            "数据类型": "GDP同比增速，宏观经济指标",
