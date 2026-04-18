@@ -4701,8 +4701,8 @@ def get_ths_balance_sheet(
         symbol: str,
         indicator: str,
         selected_indicators: Optional[List[str]] = None,
-        start_date: Optional[str] = None,  # 新增参数：开始日期
-        end_date: Optional[str] = None  # 新增参数：结束日期
+        start_date: Optional[str] = None,  # 开始日期
+        end_date: Optional[str] = None  # 结束日期
 ) -> str:
     """
     获取同花顺-财务指标提供的指定股票的资产负债表历史数据，并可按报告期时间范围过滤。
@@ -4714,7 +4714,7 @@ def get_ths_balance_sheet(
         indicator (str): 数据粒度，若指定查询时间使用"按报告期"，可选值包括 "按报告期", "按年度", "按单季度"。 且默认为“按报告期”。
         selected_indicators (Optional[List[str]]): 可选参数，指定要返回的财务指标列的列表。
                                                   如果提供此参数，则只返回这些指定的列（以及'报告期'列）。
-                                                  例如：['资产总计', '负债总计', '所有者权益合计']。
+                                                  例如：['资产合计', '负债合计', '所有者权益（或股东权益）合计', '归属于母公司所有者权益合计']。
         start_date (Optional[str]): 可选参数。查询的开始日期，格式为 'YYYY-MM-DD'。
                                     将过滤“报告期”在此日期或之后的数据。
         end_date (Optional[str]): 可选参数。查询的结束日期，格式为 'YYYY-MM-DD'。
@@ -4724,7 +4724,6 @@ def get_ths_balance_sheet(
         str: 一个格式化后的字符串，包含指定股票的资产负债表摘要和部分详细数据。
              如果获取失败，则返回错误信息。
     """
-    MAX_ROWS_TO_DISPLAY = 10  # 控制表格输出的最大行数
 
     def _parse_chinese_currency_string(value):
         """
@@ -4750,12 +4749,11 @@ def get_ths_balance_sheet(
                 return float('nan')
         else:
             try:
-                # 尝试直接转换为浮点数，处理可能存在的逗号
+                # 直接转换为浮点数，处理可能存在的逗号
                 return float(s_value.replace(',', ''))
             except ValueError:
                 return float('nan')
 
-    # --- 辅助函数和常量定义结束 ---
     if ak is None:
         return "错误：akshare 库未安装。请先安装该库才能使用此工具。"
 
@@ -4773,13 +4771,13 @@ def get_ths_balance_sheet(
     if start_date:
         try:
             parsed_start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
-            parsed_start_timestamp = pd.Timestamp(parsed_start_date_obj)  # 转换为 Timestamp
+            parsed_start_timestamp = pd.Timestamp(parsed_start_date_obj)
         except ValueError:
             return "错误：'start_date' 参数格式无效。请使用 'YYYY-MM-DD' 格式。"
     if end_date:
         try:
             parsed_end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
-            parsed_end_timestamp = pd.Timestamp(parsed_end_date_obj)  # 转换为 Timestamp
+            parsed_end_timestamp = pd.Timestamp(parsed_end_date_obj)
         except ValueError:
             return "错误：'end_date' 参数格式无效。请使用 'YYYY-MM-DD' 格式。"
 
@@ -4787,27 +4785,33 @@ def get_ths_balance_sheet(
         return "错误：'start_date' 不能晚于 'end_date'。"
 
     try:
-        # 调用 AKShare 接口获取数据
+        # 调用API
         df = ak.stock_financial_debt_ths(symbol=symbol, indicator=indicator)
 
         if df.empty:
             return f"未能获取到股票代码 '{symbol}' 在 '{indicator}' 模式下的同花顺资产负债表数据。请检查股票代码或指示器是否正确。"
 
+        # 打印所有可用的输出指标
+        print(f"\n{'='*80}")
+        print(f"【所有可用指标列表】股票代码: {symbol}, 数据粒度: {indicator}")
+        print(f"{'='*80}")
+        print(f"总计 {len(df.columns)} 个指标：")
+        for idx, col in enumerate(df.columns, 1):
+            print(f"  {idx:2d}. {col}")
+        print(f"{'='*80}\n")
+
         output_lines = [f"同花顺股票 '{symbol}' ({indicator}) 资产负债表历史数据:\n"]
         output_lines.append("=" * 80)
 
-        # --- 日期过滤逻辑 (基于 '报告期') ---
+        # 日期过滤
         if '报告期' in df.columns and (parsed_start_timestamp or parsed_end_timestamp):
             # 将 '报告期' 列转换为日期时间类型，无效值设为 NaT
-            # 尝试 YYYYMMDD 和 YYYY-MM-DD 两种格式
             df['报告期_dt'] = pd.to_datetime(df['报告期'], errors='coerce', format='%Y%m%d')
             invalid_dates = df['报告期_dt'].isna()
             if invalid_dates.any():
                 df.loc[invalid_dates, '报告期_dt'] = pd.to_datetime(df.loc[invalid_dates, '报告期'], errors='coerce',
                                                                     format='%Y-%m-%d')
 
-
-            original_len = len(df)
             if parsed_start_timestamp:
                 df = df[df['报告期_dt'] >= parsed_start_timestamp].copy()
                 output_lines.append(f"已过滤，报告期从 {start_date} 开始。")
@@ -4827,14 +4831,12 @@ def get_ths_balance_sheet(
                 elif end_date:
                     date_range_info = f"到 {end_date} 结束"
                 return f"在指定日期范围 {date_range_info} 内，未能找到股票 '{symbol}' 的资产负债表数据。"
-        # --- 日期过滤结束 ---
 
         output_lines.append(f"总计找到 {len(df)} 条资产负债表记录，包含 {len(df.columns)} 项指标。")
 
         actual_display_columns = []
         if selected_indicators:
-            # 如果指定了 selected_indicators，则只返回这些列（以及报告期）
-            # 总是尝试包含 '报告期' 列，因为它通常是时间维度
+            # 如果指定了 selected_indicators，则只返回这些列
             if '报告期' in df.columns:
                 actual_display_columns.append('报告期')
 
@@ -4842,16 +4844,17 @@ def get_ths_balance_sheet(
             not_found_selected_indicators = []
             for requested_col in selected_indicators:
                 if requested_col in df.columns:
-                    if requested_col not in actual_display_columns:  # 避免重复添加
+                    if requested_col not in actual_display_columns:
+                        # 避免重复添加
                         actual_display_columns.append(requested_col)
                     found_selected_indicators.append(requested_col)
                 else:
                     not_found_selected_indicators.append(requested_col)
 
-            # 如果最终没有列可显示（例如，报告期不存在且所有请求的指标都不存在）
+            # 如果最终没有列可显示
             if not actual_display_columns:
                 return f"错误：未能找到您请求的任何指标。请检查股票代码或指标名称是否正确。"
-            # 如果部分请求的指标未找到，添加提示
+            # 如果部分请求的指标未找到
             elif not_found_selected_indicators:
                 output_lines.append(f"注意：您请求的指标 '{', '.join(not_found_selected_indicators)}' 未在数据中找到。")
                 if not found_selected_indicators and '报告期' in df.columns:
@@ -4862,7 +4865,7 @@ def get_ths_balance_sheet(
             output_lines.append(f"已根据您的请求显示以下指标：{', '.join(actual_display_columns)}")
 
         else:
-            # 如果未指定 selected_indicators，则使用预定义的关键列
+            # 如果未指定 selected_indicators
             display_columns_priority = [
                 '报告期',
                 '所有者权益（或股东权益）合计',
@@ -4883,7 +4886,7 @@ def get_ths_balance_sheet(
                 actual_display_columns = df.columns[:min(len(df.columns), 5)].tolist()
                 output_lines.append(f"注意：未能找到所有预期的关键指标列，将显示前 {len(actual_display_columns)} 列。")
 
-        # 再次检查，确保最终要显示的列不为空
+        # 确保最终要显示的列不为空
         if not actual_display_columns:
             return f"未能获取到股票代码 '{symbol}' 在 '{indicator}' 模式下的同花顺资产负债表数据，或数据不包含任何可显示列。"
 
@@ -4896,11 +4899,11 @@ def get_ths_balance_sheet(
 
         # 格式化数值列
         for col in display_df.columns:
-            if col != '报告期':  # '报告期' 通常是字符串或日期时间
+            if col != '报告期':
                 # 检查列在解析后是否包含数值数据
                 if pd.api.types.is_numeric_dtype(display_df[col]):
-                    # 如果是百分比列（例如包含“率”或“同比”），则格式化为百分比
-                    if '率' in col or '同比' in col:  # 用于识别百分比列的启发式方法
+                    # 如果是百分比列，则格式化为百分比
+                    if '率' in col or '同比' in col:
                         display_df[col] = display_df[col].apply(
                             lambda x: f"{x * 100:.2f}%" if pd.notna(x) else '-'
                         )
@@ -4912,12 +4915,10 @@ def get_ths_balance_sheet(
                     # 如果不是数值类型，则用 '-' 填充 NaN
                     display_df[col] = display_df[col].fillna('-')
             else:
-                # 对于 '报告期'，确保它是字符串并填充 NaN
                 display_df[col] = display_df[col].astype(str).fillna('-')
 
-        # 默认按 '报告期' 降序排序，以显示最近的记录在前
+        # 按 '报告期' 降序排序，以显示最近的记录在前
         if '报告期' in display_df.columns:
-            # 临时将报告期转换为可排序的 Pandas Timestamp 格式
             display_df['temp_sort_date'] = pd.to_datetime(display_df['报告期'], errors='coerce', format='%Y%m%d')
             invalid_sort_dates = display_df['temp_sort_date'].isna()
             if invalid_sort_dates.any():
@@ -4930,7 +4931,7 @@ def get_ths_balance_sheet(
         output_lines.append(f"显示前 {rows_to_show} 条记录：")
         output_lines.append("-" * 80)
 
-        # 使用 to_string() 方法获取格式良好的表格字符串
+        # 获取格式良好的表格字符串
         output_lines.append(display_df.head(rows_to_show).to_string(index=False))
 
         if len(df) > MAX_ROWS_TO_DISPLAY:
@@ -5950,7 +5951,8 @@ prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-tooll = get_cninfo_stock_profile
+# 从tools列表中找到get_ths_balance_sheet工具对象
+tooll = get_ths_balance_sheet
 
 parser = JsonOutputKeyToolsParser(key_name=tooll.name, first_tool_only=True)
 
@@ -5969,9 +5971,25 @@ def p(res):
     return res
 profile_runnable = RunnableLambda(lambda x: p(x))
 
+# 创建一个包装函数来处理工具调用结果
+def invoke_tool(tool_call):
+    """处理工具调用结果"""
+    if tool_call is None:
+        return "工具调用失败：未获取到有效的工具调用参数"
+    try:
+        # tool_call 应该是一个包含工具调用信息的字典
+        if isinstance(tool_call, dict):
+            # 直接调用工具
+            return tooll.invoke(tool_call)
+        else:
+            return f"工具调用失败：意外的输入类型 {type(tool_call)}"
+    except Exception as e:
+        return f"工具调用失败：{str(e)}"
 
-api_chain = prompt | llm_with_tools | profile_runnable | parser | profile_runnable | tooll | profile_runnable
+tool_invoker = RunnableLambda(invoke_tool)
+
+api_chain = prompt | llm_with_tools | profile_runnable | parser | profile_runnable | tool_invoker | profile_runnable
 output_chain = output_prompt | model | StrOutputParser()
 full_chain = api_chain | output_chain
-response = full_chain.invoke("查比亚迪的公司信息， 只要入选指数")
+response = full_chain.invoke("使用同花顺给我查一下 平安银行最近一期的资产负债表，包括总资产、总负债和股东权益。")
 print(response)

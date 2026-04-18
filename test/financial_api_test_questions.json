@@ -1,0 +1,695 @@
+{
+  "test_scenarios": [
+    {
+      "scenario_id": "scenario_001",
+      "scenario_name": "A股股票投资分析",
+      "description": "用户想要分析一只A股股票，需要了解其价格走势、基本面、资金流向等多个方面",
+      "conversations": [
+        {
+          "round": 1,
+          "user_query": "我想了解一下000001（平安银行）这只股票的情况，包括它的当前价格、今日涨跌幅、成交量，以及最近一个月的价格走势如何？",
+          "aspects": [
+            "实时行情数据",
+            "价格走势分析",
+            "成交量分析",
+            "涨跌幅分析"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney Individual Stock Information Query",
+            "AKShare Eastmoney Stock Bid/Ask Quote",
+            "AKShare Eastmoney A-Shares Historical Market Data",
+            "Quote Endpoint Trending"
+          ],
+          "answer": "平安银行（000001）的当前价格为11.59元，今日涨跌幅为-0.69%，成交量为670,077手。最近一个月的价格走势如下：从2025年10月20日到2025年11月18日，股价从约11.41元波动至约11.59元。期间最高价达到11.69元，最低价为11.35元。"
+        },
+        {
+          "round": 2,
+          "user_query": "好的，我还想了解这家公司的财务状况，包括最近一期的营业收入、净利润、资产负债率，以及它的市盈率和市净率是多少？",
+          "aspects": [
+            "财务报表数据",
+            "盈利能力分析",
+            "财务健康度评估",
+            "估值指标分析"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney Stock Profit Statement Query",
+            "AKShare Eastmoney Shanghai & Shenzhen Stock Exchange Balance Sheet Query",
+            "AKSHARE_STOCK_VALUE_EM",
+            "AKSHARE_STOCK_ZH_VALUATION_BAIDU",
+            "AKSHARE_STOCK_INDEX_PE_LG",
+            "AKSHARE_STOCK_INDEX_PB_LG"
+          ],
+          "answer": "根据查询到的数据，平安银行（000001）在2025年9月30日的财务状况如下：营业收入为1,006.68亿元，同比减少9.78%；净利润为383.39亿元，同比下降3.50%。每股收益为1.87元，每股净资产为23.08元。市盈率计算公式为股价/每股收益，即11.59/1.87≈6.20倍；市净率计算公式为股价/每股净资产，即11.59/23.08≈0.50倍。关于资产负债率，提供的数据中并未直接给出，需要进一步获取相关数据才能计算。"
+        },
+        {
+          "round": 3,
+          "user_query": "我还想看看这只股票的资金流向情况，最近一周主力资金是流入还是流出？另外，有没有相关的新闻或者研报？",
+          "aspects": [
+            "资金流向分析",
+            "主力资金动向",
+            "新闻资讯",
+            "研报信息"
+          ],
+          "relevant_apis": [
+            "AKShare Tonghuashun Stock Fund Flow Query",
+            "AKShare Eastmoney Individual Stock Fund Flow Query",
+            "AKShare Eastmoney Stock News Query",
+            "AKShare Eastmoney Institutional Research Statistics Query",
+            "AKShare Stock Institutional Research Detail (Eastmoney)",
+            "NewsAPI Company News Search (Chinese)"
+          ],
+          "answer": "平安银行（000001）最近一周的主力资金流向情况如下：从2025年11月11日至11月18日，主力净流入金额经历了波动。其中，11月11日和11月14日出现正向流入，分别为1.12亿和1.28亿元；而其他日期则呈现流出状态，特别是11月18日达到了-1.34亿元的最大流出量。此外，超大单、大单、中单以及小单的资金流向也显示出一定的分化特征。关于平安银行的相关新闻或研报信息，在提供的数据中没有直接提及，建议通过专业的财经资讯平台或证券研究报告获取最新动态。"
+        },
+        {
+          "round": 4,
+          "user_query": "最后，我想对比一下平安银行和招商银行（600036）这两只股票，看看它们的估值水平、最近一个季度的业绩表现，以及市场关注度有什么差异？",
+          "aspects": [
+            "股票对比分析",
+            "估值对比",
+            "业绩对比",
+            "市场关注度对比"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney Individual Stock Information Query",
+            "AKShare Eastmoney Stock Profit Statement Query",
+            "AKSHARE_STOCK_VALUE_EM",
+            "AKShare Eastmoney A-Share Popularity Rank",
+            "AKShare Eastmoney A-Share Hot Rank Detail"
+          ],
+          "answer": "根据提供的数据，平安银行（000001）与招商银行（600036）在估值水平、最近一个季度的业绩表现以及市场关注度方面的差异如下：估值水平：
+            平安银行（000001）的市盈率为6.20倍，市净率为0.50倍。
+            招商银行（600036）的每股收益为4.43元，每股净资产为43.21元。假设当前股价为X，则招商银行的市盈率和市净率分别为X/4.43和X/43.21。
+            最近一个季度的业绩表现：
+            平安银行（000001）的营业收入为1,006.68亿元，净利润为383.39亿元。
+            招商银行（600036）的营业总收入为251,420,000,000.00元，同比增长-0.51%；净利润为113,772,000,000.00元，同比增长0.52%。
+            市场关注度：
+            平安银行（000001）的人气排名为1049位，较昨日下降3位。
+            招商银行（600036）的人气排名为522位，较昨日下降1位。
+            平安银行（000001）的热门关键词包括互联金融（热度233）、机构重仓（热度95）、深圳特区（热度44）、区块链（热度17）、跨境支付（热度7）、证金持股（热度3）。
+            招商银行（600036）的热门关键词包括互联金融（热度318）、茅指数（热度2）、机构重仓（热度1）。"
+        }
+      ]
+    },
+    {
+      "scenario_id": "scenario_002",
+      "scenario_name": "美股投资分析",
+      "description": "用户想要分析一只美股股票，需要了解其价格走势、公司基本面、盈利情况等",
+      "conversations": [
+        {
+          "round": 1,
+          "user_query": "我想了解一下苹果公司（AAPL）的股票情况，包括当前价格、今日涨跌幅，以及最近一周的日线价格走势？",
+          "aspects": [
+            "实时行情数据",
+            "价格走势分析",
+            "涨跌幅分析"
+          ],
+          "relevant_apis": [
+            "Quote Endpoint Trending",
+            "TIME_SERIES_DAILY",
+            "TIME_SERIES_DAILY_ADJUSTED",
+            "MARKET_STATUS"
+          ]
+        },
+        {
+          "round": 2,
+          "user_query": "我还想了解苹果公司的基本面情况，包括公司简介、市值、市盈率、市净率等关键指标，以及最近一期的财务报表数据？",
+          "aspects": [
+            "公司基本信息",
+            "财务比率分析",
+            "估值指标",
+            "财务报表数据"
+          ],
+          "relevant_apis": [
+            "OVERVIEW",
+            "INCOME_STATEMENT",
+            "BALANCE_SHEET",
+            "CASH_FLOW"
+          ]
+        },
+        {
+          "round": 3,
+          "user_query": "我想看看苹果公司最近几个季度的盈利情况，包括每股收益、营收增长率，以及未来的盈利预期？另外，它的分红情况如何？",
+          "aspects": [
+            "盈利分析",
+            "增长趋势",
+            "盈利预期",
+            "分红政策"
+          ],
+          "relevant_apis": [
+            "EARNINGS",
+            "INCOME_STATEMENT",
+            "DIVIDENDS",
+            "EARNINGS_CALENDAR"
+          ]
+        },
+        {
+          "round": 4,
+          "user_query": "我还想了解苹果公司最近的新闻和情绪分析，以及它的期权数据，看看市场对它的预期如何？",
+          "aspects": [
+            "新闻资讯",
+            "市场情绪",
+            "期权数据",
+            "市场预期"
+          ],
+          "relevant_apis": [
+            "NEWS_SENTIMENT",
+            "NewsAPI Foreign Company News Search (English)",
+            "HISTORICAL_OPTIONS"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario_id": "scenario_003",
+      "scenario_name": "港股投资分析",
+      "description": "用户想要分析一只港股股票，需要了解其价格走势、公司概况、财务数据等",
+      "conversations": [
+        {
+          "round": 1,
+          "user_query": "我想了解一下腾讯控股（00700）这只港股的情况，包括当前价格、今日涨跌幅、成交量，以及最近一个月的价格走势？",
+          "aspects": [
+            "实时行情数据",
+            "价格走势分析",
+            "成交量分析"
+          ],
+          "relevant_apis": [
+            "AKShare Hong Kong Stock Spot Market Data",
+            "AKShare Hong Kong Stock Historical Market Data",
+            "AKShare Hong Kong Famous Stock Real-time Spot Data"
+          ]
+        },
+        {
+          "round": 2,
+          "user_query": "我还想了解腾讯控股的公司概况，包括公司简介、主营业务，以及它的财务分析指标，比如ROE、ROA、毛利率等？",
+          "aspects": [
+            "公司基本信息",
+            "业务概况",
+            "财务分析指标",
+            "盈利能力指标"
+          ],
+          "relevant_apis": [
+            "AKShare Hong Kong Stock Company Profile",
+            "AKShare Hong Kong Stock Security Profile",
+            "AKShare Hong Kong Stock Financial Analysis Indicators (Eastmoney)",
+            "AKShare Hong Kong Stock Financial Statements (Eastmoney)"
+          ]
+        },
+        {
+          "round": 3,
+          "user_query": "我想看看腾讯控股的估值水平，包括市盈率、市净率，以及和同行业其他公司相比如何？另外，它的AH股溢价情况如何？",
+          "aspects": [
+            "估值分析",
+            "行业对比",
+            "AH股溢价",
+            "相对估值"
+          ],
+          "relevant_apis": [
+            "AKSHARE_STOCK_HK_VALUATION_BAIDU",
+            "AKShare Eastmoney AH-Shares Real-time Market Data",
+            "AKShare Tencent AH-Shares Historical Market Data"
+          ]
+        },
+        {
+          "round": 4,
+          "user_query": "我还想了解腾讯控股最近的热度排名，以及相关的新闻资讯？",
+          "aspects": [
+            "市场关注度",
+            "热度排名",
+            "新闻资讯"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney Hong Kong Stock Popularity Rank",
+            "AKShare Eastmoney Hong Kong Stock Hot Rank Detail",
+            "NewsAPI Company News Search (Chinese)"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario_id": "scenario_004",
+      "scenario_name": "债券投资分析",
+      "description": "用户想要分析债券投资，需要了解债券信息、收益率、市场行情等",
+      "conversations": [
+        {
+          "round": 1,
+          "user_query": "我想了解一下当前债券市场的情况，包括国债收益率曲线、企业债的发行情况，以及可转债市场的整体表现？",
+          "aspects": [
+            "债券市场概况",
+            "收益率曲线",
+            "债券发行情况",
+            "可转债市场"
+          ],
+          "relevant_apis": [
+            "AKShare ChinaBond Yield Curve Query",
+            "AKShare Cninfo Corporate Bond Issues",
+            "AKShare Eastmoney Convertible Bond List",
+            "AKShare Shanghai Stock Exchange Bond Deal Summary"
+          ]
+        },
+        {
+          "round": 2,
+          "user_query": "我想查询一下某只具体的债券信息，比如代码为123456的可转债，包括它的基本信息、转股价格、到期时间，以及当前的实时报价？",
+          "aspects": [
+            "债券基本信息",
+            "可转债条款",
+            "实时行情",
+            "转股信息"
+          ],
+          "relevant_apis": [
+            "AKShare Sina Convertible Bond Profile",
+            "AKShare Sina Convertible Bond Summary",
+            "AKShare Shanghai and Shenzhen Convertible Bond Real-time Quotes",
+            "AKShare Eastmoney Convertible Bond Details"
+          ]
+        },
+        {
+          "round": 3,
+          "user_query": "我还想了解这只可转债的价值分析，包括它的转股溢价率、纯债价值、期权价值等，以及它的历史价格走势？",
+          "aspects": [
+            "可转债价值分析",
+            "转股溢价率",
+            "历史价格走势",
+            "价值评估"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney Convertible Bond Value Analysis",
+            "AKShare Shanghai and Shenzhen Convertible Bond Daily Historical Data",
+            "AKShare Shanghai and Shenzhen Bond Daily Historical Data"
+          ]
+        },
+        {
+          "round": 4,
+          "user_query": "最后，我想对比一下中美两国的债券收益率，看看当前的利率环境如何？",
+          "aspects": [
+            "国际债券对比",
+            "利率环境分析",
+            "收益率对比"
+          ],
+          "relevant_apis": [
+            "AKShare China-US Bond Yield Rates",
+            "AKShare ChinaBond Yield Curve Query"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario_id": "scenario_005",
+      "scenario_name": "市场行情综合查询",
+      "description": "用户想要了解整体市场行情，包括市场概况、热门股票、涨跌停情况等",
+      "conversations": [
+        {
+          "round": 1,
+          "user_query": "我想了解一下今天A股市场的整体情况，包括上证指数和深证成指的表现，以及市场的成交额、涨跌家数等统计信息？",
+          "aspects": [
+            "市场整体表现",
+            "指数表现",
+            "市场统计",
+            "成交情况"
+          ],
+          "relevant_apis": [
+            "AKShare Shanghai Stock Exchange Summary",
+            "AKShare Shenzhen Stock Exchange Security Category Statistics",
+            "AKShare Shanghai Stock Exchange Daily Deal Summary",
+            "MARKET_STATUS"
+          ]
+        },
+        {
+          "round": 2,
+          "user_query": "我还想看看今天有哪些股票涨停了，哪些股票跌停了，以及市场上有哪些强势股票和热门股票？",
+          "aspects": [
+            "涨跌停股票",
+            "强势股票",
+            "热门股票",
+            "市场热点"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney Limit Up Stocks Pool Query",
+            "AKShare Eastmoney Limit Down Stocks Pool Query",
+            "AKShare Eastmoney Strong Stocks Pool Query",
+            "AKShare Eastmoney A-Share Popularity Rank",
+            "AKShare Eastmoney A-Share Surge Rank"
+          ]
+        },
+        {
+          "round": 3,
+          "user_query": "我想了解一下不同板块的表现情况，比如科技板块、金融板块、消费板块等，看看哪些板块今天表现最好？",
+          "aspects": [
+            "板块分析",
+            "行业表现",
+            "板块轮动",
+            "行业对比"
+          ],
+          "relevant_apis": [
+            "AKShare Shenzhen Stock Exchange Stock Industry Trading Data",
+            "AKShare Eastmoney A-Shares Real-time Market Data"
+          ]
+        },
+        {
+          "round": 4,
+          "user_query": "我还想看看科创板和创业板的表现如何，以及新股的行情如何？",
+          "aspects": [
+            "科创板行情",
+            "创业板行情",
+            "新股表现",
+            "细分市场"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney Sci-Tech Innovation Board A-Shares Real-time Market Data",
+            "AKShare ChiNext A-Shares Real-time Quotes (Eastmoney)",
+            "AKShare Eastmoney New A-Shares Real-time Market Data",
+            "AKShare Eastmoney Sub New Stocks Pool Query"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario_id": "scenario_006",
+      "scenario_name": "公司财务深度分析",
+      "description": "用户想要深入分析一家公司的财务状况，包括财务报表、盈利能力、现金流等",
+      "conversations": [
+        {
+          "round": 1,
+          "user_query": "我想深入分析一下贵州茅台（600519）的财务状况，包括它最近三年的营业收入、净利润、毛利率的变化趋势，以及它的盈利能力如何？",
+          "aspects": [
+            "财务趋势分析",
+            "盈利能力分析",
+            "收入增长",
+            "利润分析"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney Stock Profit Statement Query",
+            "AKShare Eastmoney Stock Performance Report Query",
+            "AKShare Eastmoney Stock Performance Express Report Query"
+          ]
+        },
+        {
+          "round": 2,
+          "user_query": "我还想了解贵州茅台的资产负债表情况，包括它的总资产、负债率、流动比率，以及它的资产结构如何？",
+          "aspects": [
+            "资产负债表分析",
+            "财务结构",
+            "偿债能力",
+            "资产质量"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney Shanghai & Shenzhen Stock Exchange Balance Sheet Query",
+            "AKShare Tonghuashun Financial Debt Balance Sheet Query"
+          ]
+        },
+        {
+          "round": 3,
+          "user_query": "我想看看贵州茅台的现金流量表，了解它的经营现金流、投资现金流、筹资现金流的情况，以及它的现金流质量如何？",
+          "aspects": [
+            "现金流量分析",
+            "现金流质量",
+            "现金流结构",
+            "资金运用"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney Stock Cash Flow Statement Query"
+          ]
+        },
+        {
+          "round": 4,
+          "user_query": "最后，我想看看贵州茅台的业绩预告和业绩快报，了解它未来的业绩预期，以及机构对它的盈利预测如何？",
+          "aspects": [
+            "业绩预告",
+            "业绩快报",
+            "盈利预测",
+            "业绩预期"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney Stock Performance Forecast Query",
+            "AKShare Eastmoney Stock Performance Express Report Query",
+            "AKShare Eastmoney Institutional Research Statistics Query"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario_id": "scenario_007",
+      "scenario_name": "宏观经济分析",
+      "description": "用户想要了解宏观经济情况，包括GDP、利率、货币供应量等宏观指标",
+      "conversations": [
+        {
+          "round": 1,
+          "user_query": "我想了解一下中国的宏观经济情况，包括最新的GDP数据、失业率、以及货币供应量M2的情况？",
+          "aspects": [
+            "GDP数据",
+            "失业率",
+            "货币供应量",
+            "宏观经济指标"
+          ],
+          "relevant_apis": [
+            "AKSHARE_MACRO_CHINA_URBAN_UNEMPLOYMENT",
+            "AKSHARE_MACRO_CHINA_MONEY_SUPPLY",
+            "AKSHARE_MACRO_CHINA_STOCK_MARKET_CAP"
+          ]
+        },
+        {
+          "round": 2,
+          "user_query": "我还想了解中国的利率情况，包括央行基准利率、以及人民币贷款和存款的数据？",
+          "aspects": [
+            "利率政策",
+            "央行利率",
+            "贷款数据",
+            "存款数据"
+          ],
+          "relevant_apis": [
+            "AKShare China People's Bank of China (PBOC) Interest Rate Report",
+            "AKSHARE_MACRO_RMB_LOAN",
+            "AKSHARE_MACRO_RMB_DEPOSIT"
+          ]
+        },
+        {
+          "round": 3,
+          "user_query": "我想对比一下全球主要经济体的利率情况，包括美国、欧洲、日本等，看看当前的全球利率环境如何？",
+          "aspects": [
+            "全球利率对比",
+            "国际利率环境",
+            "央行政策对比"
+          ],
+          "relevant_apis": [
+            "AKShare US Federal Reserve Interest Rate Report",
+            "AKShare European Central Bank (ECB) Interest Rate Report",
+            "AKShare Japan Bank of Japan (BoJ) Interest Rate Report",
+            "AKShare UK Bank of England (BoE) Interest Rate Report"
+          ]
+        },
+        {
+          "round": 4,
+          "user_query": "我还想了解中国的税收收入、外汇储备，以及全球宏观经济日历，看看有哪些重要的经济事件？",
+          "aspects": [
+            "税收收入",
+            "外汇储备",
+            "经济事件日历",
+            "宏观经济事件"
+          ],
+          "relevant_apis": [
+            "AKSHARE_MACRO_CHINA_NATIONAL_TAX_RECEIPTS",
+            "AKSHARE_MACRO_CHINA_FX_GOLD",
+            "AKSHARE_MACRO_INFO_WS",
+            "AKSHARE_NEWS_ECONOMIC_BAIDU"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario_id": "scenario_008",
+      "scenario_name": "数字货币和汇率分析",
+      "description": "用户想要了解数字货币行情和汇率情况",
+      "conversations": [
+        {
+          "round": 1,
+          "user_query": "我想了解一下比特币和以太坊的当前价格，以及它们最近一周和最近一个月的价格走势如何？",
+          "aspects": [
+            "数字货币价格",
+            "价格走势",
+            "短期趋势",
+            "中期趋势"
+          ],
+          "relevant_apis": [
+            "AKSHARE_CRYPTO_JS_SPOT",
+            "DIGITAL_CURRENCY_DAILY",
+            "DIGITAL_CURRENCY_WEEKLY",
+            "DIGITAL_CURRENCY_MONTHLY"
+          ]
+        },
+        {
+          "round": 2,
+          "user_query": "我还想了解比特币的持仓报告，看看机构和大户的持仓情况如何？",
+          "aspects": [
+            "持仓分析",
+            "机构持仓",
+            "大户持仓",
+            "市场结构"
+          ],
+          "relevant_apis": [
+            "AKSHARE_CRYPTO_BITCOIN_HOLD_REPORT"
+          ]
+        },
+        {
+          "round": 3,
+          "user_query": "我想了解一下人民币对美元的汇率情况，包括当前汇率、最近一个月的汇率走势，以及影响汇率的因素？",
+          "aspects": [
+            "汇率查询",
+            "汇率走势",
+            "汇率分析",
+            "货币对"
+          ],
+          "relevant_apis": [
+            "CURRENCY_EXCHANGE_RATE"
+          ]
+        },
+        {
+          "round": 4,
+          "user_query": "我还想对比一下主要货币对的汇率情况，包括欧元、日元、英镑等对美元的汇率？",
+          "aspects": [
+            "多货币对比",
+            "汇率对比",
+            "货币强弱"
+          ],
+          "relevant_apis": [
+            "CURRENCY_EXCHANGE_RATE"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario_id": "scenario_009",
+      "scenario_name": "股票技术分析",
+      "description": "用户想要进行股票技术分析，需要不同时间周期的K线数据",
+      "conversations": [
+        {
+          "round": 1,
+          "user_query": "我想对000002（万科A）进行技术分析，需要获取它的日线、周线、月线数据，看看不同时间周期的价格走势？",
+          "aspects": [
+            "日线数据",
+            "周线数据",
+            "月线数据",
+            "多周期分析"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney A-Shares Historical Market Data",
+            "TIME_SERIES_DAILY",
+            "TIME_SERIES_WEEKLY",
+            "TIME_SERIES_MONTHLY"
+          ]
+        },
+        {
+          "round": 2,
+          "user_query": "我还想看看万科A的分钟级数据，包括5分钟、15分钟、30分钟和60分钟的K线数据，用于短期技术分析？",
+          "aspects": [
+            "分钟级数据",
+            "短期技术分析",
+            "日内走势",
+            "分时图数据"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney A-Shares Minute-level Historical Market Data",
+            "AKShare Eastmoney Stock Intraday Data",
+            "TIME_SERIES_INTRADAY"
+          ]
+        },
+        {
+          "round": 3,
+          "user_query": "我想对比一下万科A的原始价格数据和经过调整后的价格数据，看看股票拆分和分红对价格走势的影响？",
+          "aspects": [
+            "价格调整",
+            "股票拆分",
+            "分红影响",
+            "复权价格"
+          ],
+          "relevant_apis": [
+            "TIME_SERIES_DAILY",
+            "TIME_SERIES_DAILY_ADJUSTED",
+            "TIME_SERIES_WEEKLY_ADJUSTED",
+            "TIME_SERIES_MONTHLY_ADJUSTED"
+          ]
+        },
+        {
+          "round": 4,
+          "user_query": "最后，我想看看万科A的盘前数据，了解开盘前的市场情绪和预期？",
+          "aspects": [
+            "盘前数据",
+            "市场情绪",
+            "开盘预期"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney A-Share Pre-Market Minute Data"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario_id": "scenario_010",
+      "scenario_name": "股票停复牌和分红查询",
+      "description": "用户想要了解股票的停复牌信息、分红情况等公司行为",
+      "conversations": [
+        {
+          "round": 1,
+          "user_query": "我想查询一下某只股票是否停牌了，如果停牌了，停牌的原因是什么，预计什么时候复牌？",
+          "aspects": [
+            "停牌信息",
+            "停牌原因",
+            "复牌时间",
+            "交易状态"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney Stock Trading Halt and Resumption Information Query",
+            "AKShare Baidu Stock Trading Halt and Resumption Information (HK/Other Markets)"
+          ]
+        },
+        {
+          "round": 2,
+          "user_query": "我还想了解这只股票的历史分红情况，包括分红日期、分红金额、分红率等？",
+          "aspects": [
+            "分红历史",
+            "分红金额",
+            "分红率",
+            "分红政策"
+          ],
+          "relevant_apis": [
+            "DIVIDENDS",
+            "AKShare Sina Stock History Dividend Query",
+            "AKShare Cninfo Stock Dividend History Query",
+            "AKShare Baidu Stock Trading Dividend Information (HK/Other Markets)"
+          ]
+        },
+        {
+          "round": 3,
+          "user_query": "我想看看这只股票是否有股票拆分的历史，以及拆分对股价的影响？",
+          "aspects": [
+            "股票拆分",
+            "拆分历史",
+            "股价影响"
+          ],
+          "relevant_apis": [
+            "SPLITS"
+          ]
+        },
+        {
+          "round": 4,
+          "user_query": "我还想了解这只股票的高管持股变动情况，看看最近有没有高管增持或减持？",
+          "aspects": [
+            "高管持股",
+            "持股变动",
+            "增持减持",
+            "内部人交易"
+          ],
+          "relevant_apis": [
+            "AKShare Eastmoney Executive Shareholding Changes Query"
+          ]
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "version": "1.0",
+    "created_date": "2025-01-27",
+    "description": "金融API多轮对话测试问题集，涵盖股票、债券、宏观经济、数字货币等多个场景",
+    "total_scenarios": 10,
+    "total_conversations": 40
+  }
+}
+

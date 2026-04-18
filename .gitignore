@@ -4,4 +4,8 @@ __pycache__/
 *.pyd
 *.pyo
 
+dist/
+build/
+*.spec
+
 .env
